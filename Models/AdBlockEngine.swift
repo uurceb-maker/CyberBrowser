@@ -8,6 +8,19 @@ class AdBlockEngine: ObservableObject {
     @Published var showBanner: Bool = false
     @Published var lastBlockedDomain: String = ""
     
+    // Set for O(1) domain lookups in navigation delegate
+    private static let blockedDomainSet: Set<String> = Set(blockedDomains.map { $0.replacingOccurrences(of: "/", with: "") })
+    
+    // MARK: - Fast Domain Check
+    func isBlockedDomain(_ host: String) -> Bool {
+        for domain in Self.blockedDomainSet {
+            if host.contains(domain) {
+                return true
+            }
+        }
+        return false
+    }
+    
     // MARK: - Blocked Ad Domains (100+)
     static let blockedDomains: [String] = [
         // Google Ads
@@ -314,8 +327,8 @@ class AdBlockEngine: ObservableObject {
             removeAdElements();
         }
         
-        // Periodic cleanup
-        setInterval(removeAdElements, 3000);
+        // Delayed second cleanup (MutationObserver handles the rest)
+        setTimeout(removeAdElements, 2000);
         
         console.log('[CyberBrowser] Ad-block engine initialized');
     })();
@@ -435,18 +448,24 @@ class AdBlockEngine: ObservableObject {
     }
     
     // MARK: - Handle blocked ad message from JS
+    private var bannerHideWorkItem: DispatchWorkItem?
+    
     func handleBlockedAd(count: Int, domain: String) {
-        DispatchQueue.main.async {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
             self.totalBlockedAds += max(count, 1)
             self.lastBlockedDomain = domain
             self.showBanner = true
             
-            // Auto-hide banner after 2 seconds
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+            // Cancel previous timer to avoid flicker
+            self.bannerHideWorkItem?.cancel()
+            let workItem = DispatchWorkItem { [weak self] in
                 withAnimation(.easeOut(duration: 0.3)) {
-                    self.showBanner = false
+                    self?.showBanner = false
                 }
             }
+            self.bannerHideWorkItem = workItem
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0, execute: workItem)
         }
     }
     

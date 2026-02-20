@@ -6,24 +6,13 @@ struct ContentView: View {
     @EnvironmentObject var adBlockEngine: AdBlockEngine
     @EnvironmentObject var extensionManager: ExtensionManager
     
-    // WebView state
-    @State private var currentURL: URL = URL(string: "https://www.google.com")!
-    @State private var urlString: String = "https://www.google.com"
-    @State private var canGoBack: Bool = false
-    @State private var canGoForward: Bool = false
-    @State private var isLoading: Bool = false
-    @State private var pageTitle: String = "Yeni Sekme"
-    @State private var isSecure: Bool = true
-    
-    // Navigation triggers
-    @State private var triggerGoBack: Bool = false
-    @State private var triggerGoForward: Bool = false
-    @State private var triggerReload: Bool = false
+    // WebView store — manages the WKWebView lifecycle
+    @StateObject private var webViewStore = WebViewStore()
     
     // UI state
     @State private var showMenu: Bool = false
     @State private var showTabManager: Bool = false
-    @State private var addressBarFocused: Bool = false
+    @State private var displayURL: String = "https://www.google.com"
     
     var body: some View {
         ZStack {
@@ -37,16 +26,16 @@ struct ContentView: View {
                 
                 // MARK: - Address Bar
                 AddressBar(
-                    urlString: $urlString,
-                    isSecure: $isSecure,
-                    isLoading: $isLoading,
+                    urlString: $displayURL,
+                    isSecure: $webViewStore.isSecure,
+                    isLoading: $webViewStore.isLoading,
                     onCommit: { input in
-                        navigateTo(input)
+                        webViewStore.loadURLString(input)
                     }
                 )
                 
                 // Loading progress bar
-                if isLoading {
+                if webViewStore.isLoading {
                     GeometryReader { geometry in
                         Rectangle()
                             .fill(
@@ -62,52 +51,41 @@ struct ContentView: View {
                             )
                             .frame(height: 2)
                             .frame(width: geometry.size.width * 0.6)
-                            .offset(x: isLoading ? geometry.size.width * 0.4 : -geometry.size.width * 0.6)
+                            .offset(x: webViewStore.isLoading ? geometry.size.width * 0.4 : -geometry.size.width * 0.6)
                             .animation(
                                 .linear(duration: 1.5).repeatForever(autoreverses: false),
-                                value: isLoading
+                                value: webViewStore.isLoading
                             )
                     }
                     .frame(height: 2)
                 }
                 
                 // MARK: - Web View
-                WebView(
-                    url: $currentURL,
-                    canGoBack: $canGoBack,
-                    canGoForward: $canGoForward,
-                    isLoading: $isLoading,
-                    pageTitle: $pageTitle,
-                    isSecure: $isSecure,
-                    goBack: triggerGoBack,
-                    goForward: triggerGoForward,
-                    reload: triggerReload
-                )
-                .environmentObject(adBlockEngine)
-                .environmentObject(tabManager)
-                .environmentObject(extensionManager)
+                WebViewContainer(store: webViewStore)
                 
                 // MARK: - Bottom Navigation Bar
                 BottomNavBar(
-                    canGoBack: canGoBack,
-                    canGoForward: canGoForward,
+                    canGoBack: webViewStore.canGoBack,
+                    canGoForward: webViewStore.canGoForward,
                     tabCount: tabManager.tabs.count,
                     onBack: {
-                        triggerGoBack = true
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                            triggerGoBack = false
-                        }
+                        webViewStore.goBack()
                     },
                     onForward: {
-                        triggerGoForward = true
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                            triggerGoForward = false
-                        }
+                        webViewStore.goForward()
                     },
                     onSearch: {
-                        addressBarFocused = true
+                        // Focus address bar — noop for now, user can tap it
                     },
                     onTabs: {
+                        // Save current tab state before showing tab manager
+                        if let url = webViewStore.webView.url {
+                            tabManager.updateActiveTab(
+                                title: webViewStore.pageTitle,
+                                url: url,
+                                isSecure: webViewStore.isSecure
+                            )
+                        }
                         showTabManager = true
                     },
                     onMenu: {
@@ -117,12 +95,40 @@ struct ContentView: View {
             }
         }
         .statusBarHidden(false)
-        .onChange(of: currentURL) { newURL in
-            urlString = newURL.absoluteString
+        .onAppear {
+            // Connect stores
+            webViewStore.adBlockEngine = adBlockEngine
+            webViewStore.tabManager = tabManager
+            webViewStore.extensionManager = extensionManager
+            
+            // Inject scripts
+            webViewStore.injectScripts()
+            
+            // Load initial URL
+            let initialURL = tabManager.activeTab.url
+            webViewStore.loadURL(initialURL)
+        }
+        .onChange(of: webViewStore.currentURLString) { newURL in
+            displayURL = newURL
+        }
+        .onChange(of: tabManager.activeTabIndex) { _ in
+            // When tab changes, load the new tab's URL
+            let tab = tabManager.activeTab
+            webViewStore.loadURL(tab.url)
+            displayURL = tab.url.absoluteString
         }
         .fullScreenCover(isPresented: $showTabManager) {
-            TabManagerView()
-                .environmentObject(tabManager)
+            TabManagerView(
+                onTabSelected: { url in
+                    webViewStore.loadURL(url)
+                    displayURL = url.absoluteString
+                },
+                onNewTab: { url in
+                    webViewStore.loadURL(url)
+                    displayURL = url.absoluteString
+                }
+            )
+            .environmentObject(tabManager)
         }
         .sheet(isPresented: $showMenu) {
             MenuView()
@@ -131,34 +137,6 @@ struct ContentView: View {
                 .environmentObject(tabManager)
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.hidden)
-        }
-    }
-    
-    // MARK: - Navigation Logic
-    private func navigateTo(_ input: String) {
-        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        
-        guard !trimmed.isEmpty else { return }
-        
-        // Check if it's a URL
-        if trimmed.contains(".") && !trimmed.contains(" ") {
-            // Looks like a URL
-            var urlStr = trimmed
-            if !urlStr.hasPrefix("http://") && !urlStr.hasPrefix("https://") {
-                urlStr = "https://" + urlStr
-            }
-            if let url = URL(string: urlStr) {
-                currentURL = url
-                urlString = url.absoluteString
-                return
-            }
-        }
-        
-        // Treat as search query
-        let query = trimmed.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? trimmed
-        if let searchURL = URL(string: "https://www.google.com/search?q=\(query)") {
-            currentURL = searchURL
-            urlString = searchURL.absoluteString
         }
     }
 }

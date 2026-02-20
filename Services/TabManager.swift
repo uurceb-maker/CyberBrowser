@@ -61,6 +61,20 @@ class TabManager: ObservableObject {
         }
     }
     
+    // Save current page state (URL, title) before switching away
+    func saveCurrentTabState(url: URL?, title: String?, isSecure: Bool?) {
+        guard activeTabIndex < tabs.count else { return }
+        if let url = url {
+            tabs[activeTabIndex].url = url
+        }
+        if let title = title {
+            tabs[activeTabIndex].title = title
+        }
+        if let isSecure = isSecure {
+            tabs[activeTabIndex].isSecure = isSecure
+        }
+    }
+    
     func updateActiveTab(title: String? = nil, url: URL? = nil, isSecure: Bool? = nil, snapshot: UIImage? = nil) {
         guard activeTabIndex < tabs.count else { return }
         

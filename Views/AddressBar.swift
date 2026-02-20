@@ -8,7 +8,19 @@ struct AddressBar: View {
     let onCommit: (String) -> Void
     
     @State private var isEditing: Bool = false
+    @State private var editText: String = ""
     @FocusState private var isFocused: Bool
+    
+    // Display hostname when not editing, full URL when editing
+    private var displayText: String {
+        if isEditing {
+            return editText
+        }
+        if let url = URL(string: urlString), let host = url.host {
+            return host
+        }
+        return urlString
+    }
     
     var body: some View {
         HStack(spacing: 8) {
@@ -19,36 +31,47 @@ struct AddressBar: View {
                 .frame(width: 20)
             
             // URL/Search TextField
-            TextField("Ara veya URL gir...", text: $urlString)
-                .textFieldStyle(.plain)
-                .font(.system(size: 14, weight: .medium, design: .monospaced))
-                .foregroundColor(.cyberWhite)
-                .accentColor(.cyberYellow)
-                .autocapitalization(.none)
-                .disableAutocorrection(true)
-                .keyboardType(.webSearch)
-                .textContentType(.URL)
-                .focused($isFocused)
-                .onSubmit {
-                    onCommit(urlString)
-                    isFocused = false
-                }
-                .onTapGesture {
-                    isEditing = true
-                    // Select all text on tap
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                        isFocused = true
+            if isEditing {
+                TextField("Ara veya URL gir...", text: $editText)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 14, weight: .medium, design: .monospaced))
+                    .foregroundColor(.cyberWhite)
+                    .accentColor(.cyberYellow)
+                    .autocapitalization(.none)
+                    .disableAutocorrection(true)
+                    .keyboardType(.webSearch)
+                    .textContentType(.URL)
+                    .focused($isFocused)
+                    .onSubmit {
+                        onCommit(editText)
+                        isEditing = false
+                        isFocused = false
                     }
-                }
+            } else {
+                Text(displayText)
+                    .font(.system(size: 14, weight: .medium, design: .monospaced))
+                    .foregroundColor(.cyberWhite)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        editText = urlString
+                        isEditing = true
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                            isFocused = true
+                        }
+                    }
+            }
             
-            // Loading / Reload indicator
+            // Loading / Clear / Reload indicator
             if isLoading {
                 ProgressView()
                     .progressViewStyle(CircularProgressViewStyle(tint: .cyberYellow))
                     .scaleEffect(0.7)
             } else if isEditing {
                 Button(action: {
-                    urlString = ""
+                    editText = ""
                     isFocused = true
                 }) {
                     Image(systemName: "xmark.circle.fill")
@@ -73,7 +96,9 @@ struct AddressBar: View {
         .padding(.horizontal, CyberTheme.padding)
         .padding(.vertical, 6)
         .onChange(of: isFocused) { focused in
-            isEditing = focused
+            if !focused {
+                isEditing = false
+            }
         }
     }
 }

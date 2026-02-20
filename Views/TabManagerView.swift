@@ -5,6 +5,10 @@ struct TabManagerView: View {
     @EnvironmentObject var tabManager: TabManager
     @Environment(\.dismiss) var dismiss
     
+    // Callbacks for tab selection and new tab
+    var onTabSelected: ((URL) -> Void)?
+    var onNewTab: ((URL) -> Void)?
+    
     let columns = [
         GridItem(.flexible(), spacing: 12),
         GridItem(.flexible(), spacing: 12)
@@ -55,6 +59,7 @@ struct TabManagerView: View {
                                 isActive: tab.id == tabManager.activeTab.id,
                                 onTap: {
                                     tabManager.switchTab(id: tab.id)
+                                    onTabSelected?(tab.url)
                                     dismiss()
                                 },
                                 onClose: {
@@ -77,7 +82,9 @@ struct TabManagerView: View {
                 Spacer()
                 
                 Button(action: {
-                    tabManager.addTab()
+                    let newTabURL = URL(string: "https://www.google.com")!
+                    tabManager.addTab(url: newTabURL)
+                    onNewTab?(newTabURL)
                     dismiss()
                 }) {
                     HStack(spacing: 8) {
