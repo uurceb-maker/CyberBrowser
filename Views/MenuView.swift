@@ -43,7 +43,7 @@ struct MenuView: View {
                                 icon: "shield.checkered",
                                 iconColor: .cyberYellow,
                                 title: "Reklam Engelleme",
-                                subtitle: adBlockEngine.isEnabled ? "\(adBlockEngine.filterInfo) — \(adBlockEngine.totalBlockedAds) engellendi" : "Devre dışı",
+                                subtitle: adBlockEngine.isEnabled ? "\(adBlockEngine.filterInfo) — \(adBlockEngine.blockedAdsCount) engellendi" : "Devre dışı",
                                 isOn: $adBlockEngine.isEnabled
                             )
                             
@@ -177,7 +177,8 @@ struct MenuView: View {
             print("[CyberBrowser] All browsing data cleared")
         }
         
-        adBlockEngine.resetCount()
+        adBlockEngine.blockedAdsCount = 0
+        adBlockEngine.lastBlockedDomain = ""
     }
 }
 
