@@ -23,9 +23,6 @@ class WebViewStore: ObservableObject {
     private(set) var webView: WKWebView!
     private var coordinator: WebViewCoordinator!
     
-    // Shared process pool for cookie/session consistency across tabs
-    private static let sharedProcessPool = WKProcessPool()
-    
     // Reference to managers (set from outside)
     weak var adBlockEngine: AdBlockEngine?
     weak var tabManager: TabManager?
@@ -40,13 +37,24 @@ class WebViewStore: ObservableObject {
     init() {
         self.coordinator = WebViewCoordinator(store: self)
         self.webView = createWebView()
+        
+        // Listen for background EasyList download completion
+        NotificationCenter.default.addObserver(
+            forName: .adBlockRulesUpdated,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            print("[WebView] 🔄 EasyList downloaded — re-injecting rules")
+            self?.injectScripts()
+        }
+    }
+    
+    deinit {
+        NotificationCenter.default.removeObserver(self)
     }
     
     private func createWebView() -> WKWebView {
         let config = WKWebViewConfiguration()
-        
-        // Use shared process pool for session consistency
-        config.processPool = Self.sharedProcessPool
         
         // Media playback
         config.allowsInlineMediaPlayback = true
@@ -165,6 +173,10 @@ class WebViewStore: ObservableObject {
             self.canGoBack = self.webView.canGoBack
             self.canGoForward = self.webView.canGoForward
             self.pageTitle = self.webView.title ?? "Sayfa"
+            
+            // Re-inject ad block rules + scripts on EVERY page load
+            // This ensures rules are always active even if WebKit cleared them
+            self.injectScripts()
             
             if let currentURL = self.webView.url {
                 self.currentURLString = currentURL.absoluteString
