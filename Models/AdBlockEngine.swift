@@ -1,88 +1,213 @@
-import SwiftUI
+import Foundation
 import WebKit
+import Combine
 
-// MARK: - Ad Block Engine v2.1 — Hybrid 3-Layer Blocking
-// Layer 1: WKContentRuleList (native bytecode — fastest, blocks network requests)
-// Layer 2: decidePolicyFor domain blocking (fallback if WKContentRuleList fails)
-// Layer 3: JavaScript cosmetic filter (hides ad elements that slip through)
-
+// MARK: - Ad Block Engine v3.0 — Real EasyList Integration
 class AdBlockEngine: ObservableObject {
-    @Published var totalBlockedAds: Int = 0
-    @Published var isEnabled: Bool = true {
+    
+    // MARK: - Published State
+    @Published var isEnabled: Bool {
         didSet {
-            if isEnabled != oldValue {
-                needsRecompile = true
-            }
+            UserDefaults.standard.set(isEnabled, forKey: "adBlockEnabled")
+            needsRecompile = (isEnabled != oldValue)
         }
     }
-    @Published var showBanner: Bool = false
+    @Published var blockedAdsCount: Int = 0
     @Published var lastBlockedDomain: String = ""
-    @Published var isCompiled: Bool = false
-    @Published var filterInfo: String = "Derleniyor..."
+    @Published var filterInfo: String = "Yükleniyor..."
     
-    private(set) var compiledRuleLists: [WKContentRuleList] = []
-    var needsRecompile: Bool = true
-    private var bannerHideWorkItem: DispatchWorkItem?
+    var needsRecompile: Bool = false
     
-    // MARK: - Layer 2: Blocked domain Set (for decidePolicyFor fallback)
-    // Use a Set for O(1) lookup instead of array linear scan
-    static let blockedDomainSet: Set<String> = {
-        var domains = Set<String>()
-        for d in AdBlockRules.blockDomainRules {
-            domains.insert(d)
-            // Also add without www prefix
-            if d.hasPrefix("www.") {
-                domains.insert(String(d.dropFirst(4)))
-            }
-        }
-        return domains
-    }()
+    // MARK: - Compiled Rules Storage
+    private var compiledRuleLists: [WKContentRuleList] = []
+    private var isCompiling = false
     
-    /// Checks if a URL's host matches a blocked domain — O(1) lookup
-    func shouldBlockURL(_ url: URL) -> Bool {
-        guard isEnabled, let host = url.host?.lowercased() else { return false }
-        
-        // Check exact match
-        if Self.blockedDomainSet.contains(host) { return true }
-        
-        // Check suffix match (e.g., "ads.example.com" contains "example.com")
-        for domain in Self.blockedDomainSet {
-            if host.hasSuffix("." + domain) { return true }
-        }
-        
-        return false
+    // MARK: - Domain Set for decidePolicyFor fallback (Layer 2)
+    private let blockedDomainKeywords: Set<String> = [
+        "doubleclick.net", "googlesyndication.com", "googleadservices.com",
+        "google-analytics.com", "googletagmanager.com", "googletagservices.com",
+        "adnxs.com", "adsrvr.org", "advertising.com", "adform.net",
+        "taboola.com", "outbrain.com", "criteo.com", "criteo.net",
+        "moatads.com", "amazon-adsystem.com", "facebook.net", "fbcdn.net",
+        "rubiconproject.com", "pubmatic.com", "openx.net", "casalemedia.com",
+        "indexwwi.com", "bidswitch.net", "smartadserver.com", "adcolony.com",
+        "unity3d.com", "applovin.com", "mopub.com", "vungle.com",
+        "admob.com", "chartboost.com", "inmobi.com", "ironsrc.com",
+        "smaato.net", "tapjoy.com", "fyber.com", "digitalturbine.com",
+        "ad.doubleclick.net", "pagead2.googlesyndication.com",
+        "securepubads.g.doubleclick.net", "tpc.googlesyndication.com",
+        "stats.g.doubleclick.net", "cm.g.doubleclick.net",
+        "ade.googlesyndication.com", "s0.2mdn.net",
+        "cdn.taboola.com", "trc.taboola.com", "nr-data.net",
+        "widgets.outbrain.com", "log.outbrain.com",
+        "static.ads-twitter.com", "analytics.twitter.com",
+        "pixel.facebook.com", "an.facebook.com",
+        "bid.g.doubleclick.net", "ad.atdmt.com",
+        "adserver.yahoo.com", "ads.yahoo.com",
+        "yieldmanager.com", "overture.com", "gemini.yahoo.com",
+        "ads.pubmatic.com", "image2.pubmatic.com",
+        "gads.pubmatic.com", "hbopenbid.pubmatic.com",
+        "track.adform.net", "serving.adform.net",
+        "creative.adform.net", "a.adform.net"
+    ]
+    
+    // MARK: - EasyList URLs
+    private let easyListURL = "https://easylist-downloads.adblockplus.org/easylist_content_blocker.json"
+    private let cacheFileName = "easylist_content_blocker.json"
+    private let cacheMaxAgeDays: Double = 7
+    private let maxRulesPerChunk = 50000 // Safari supports up to 150K per list
+    
+    // MARK: - init
+    init() {
+        self.isEnabled = UserDefaults.standard.object(forKey: "adBlockEnabled") as? Bool ?? true
     }
     
-    // MARK: - Layer 1: Compile Native Content Rules
+    // MARK: - Compile Rules (Main Entry Point)
     func compileRules(completion: @escaping () -> Void) {
         guard isEnabled else {
+            filterInfo = "Devre dışı"
             compiledRuleLists = []
-            isCompiled = true
-            needsRecompile = false
-            DispatchQueue.main.async { self.filterInfo = "Devre dışı" }
             completion()
             return
         }
         
+        guard !isCompiling else {
+            completion()
+            return
+        }
+        isCompiling = true
+        filterInfo = "Kurallar yükleniyor..."
+        
+        // Try to load from cache first, download if needed
+        loadEasyListJSON { [weak self] jsonString in
+            guard let self = self, let jsonString = jsonString else {
+                print("[AdBlock] ❌ Failed to load EasyList — using embedded fallback")
+                self?.compileEmbeddedFallback(completion: completion)
+                return
+            }
+            
+            self.compileJSONRules(jsonString, completion: completion)
+        }
+    }
+    
+    // MARK: - Load EasyList JSON (Cache or Download)
+    private func loadEasyListJSON(completion: @escaping (String?) -> Void) {
+        let cacheURL = getCacheFileURL()
+        
+        // Check if cache exists and is fresh
+        if let cacheURL = cacheURL,
+           FileManager.default.fileExists(atPath: cacheURL.path) {
+            
+            if let attrs = try? FileManager.default.attributesOfItem(atPath: cacheURL.path),
+               let modDate = attrs[.modificationDate] as? Date {
+                let age = Date().timeIntervalSince(modDate)
+                let maxAge = cacheMaxAgeDays * 24 * 60 * 60
+                
+                if age < maxAge {
+                    // Cache is fresh — use it
+                    print("[AdBlock] 📦 Loading EasyList from cache (age: \(Int(age/3600))h)")
+                    if let data = try? Data(contentsOf: cacheURL),
+                       let json = String(data: data, encoding: .utf8) {
+                        completion(json)
+                        return
+                    }
+                }
+            }
+        }
+        
+        // Download fresh copy
+        downloadEasyList(completion: completion)
+    }
+    
+    // MARK: - Download EasyList
+    private func downloadEasyList(completion: @escaping (String?) -> Void) {
+        guard let url = URL(string: easyListURL) else {
+            completion(nil)
+            return
+        }
+        
+        print("[AdBlock] ⬇️ Downloading EasyList from server...")
+        DispatchQueue.main.async {
+            self.filterInfo = "EasyList indiriliyor..."
+        }
+        
+        let task = URLSession.shared.dataTask(with: url) { [weak self] data, response, error in
+            guard let self = self else { return }
+            
+            if let error = error {
+                print("[AdBlock] ❌ Download failed: \(error.localizedDescription)")
+                // Try to use stale cache
+                if let cacheURL = self.getCacheFileURL(),
+                   let data = try? Data(contentsOf: cacheURL),
+                   let json = String(data: data, encoding: .utf8) {
+                    print("[AdBlock] 📦 Using stale cache as fallback")
+                    completion(json)
+                } else {
+                    completion(nil)
+                }
+                return
+            }
+            
+            guard let data = data,
+                  let json = String(data: data, encoding: .utf8) else {
+                print("[AdBlock] ❌ Invalid response data")
+                completion(nil)
+                return
+            }
+            
+            // Save to cache
+            if let cacheURL = self.getCacheFileURL() {
+                try? data.write(to: cacheURL)
+                print("[AdBlock] 💾 Saved EasyList to cache (\(data.count / 1024)KB)")
+            }
+            
+            completion(json)
+        }
+        task.resume()
+    }
+    
+    // MARK: - Compile JSON Rules
+    private func compileJSONRules(_ jsonString: String, completion: @escaping () -> Void) {
+        // Parse to count rules
+        guard let data = jsonString.data(using: .utf8),
+              let allRules = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+            print("[AdBlock] ❌ Failed to parse EasyList JSON")
+            compileEmbeddedFallback(completion: completion)
+            return
+        }
+        
+        let totalRules = allRules.count
+        print("[AdBlock] 📋 EasyList loaded: \(totalRules) rules total")
+        
+        // Chunk the rules
+        let chunks = stride(from: 0, to: totalRules, by: maxRulesPerChunk).map { start in
+            Array(allRules[start..<min(start + maxRulesPerChunk, totalRules)])
+        }
+        
+        print("[AdBlock] 📦 Split into \(chunks.count) chunks of max \(maxRulesPerChunk) rules")
+        
+        // Compile each chunk
         let store = WKContentRuleListStore.default()
-        let ruleChunks = AdBlockRules.generateChunkedRules()
         var compiled: [WKContentRuleList] = []
         let group = DispatchGroup()
-        var successCount = 0
-        var failCount = 0
         
-        for (index, chunk) in ruleChunks.enumerated() {
+        for (index, chunk) in chunks.enumerated() {
             group.enter()
-            store?.compileContentRuleList(
-                forIdentifier: "CyberBlock_v2_\(index)",
-                encodedContentRuleList: chunk
-            ) { ruleList, error in
+            
+            guard let chunkData = try? JSONSerialization.data(withJSONObject: chunk),
+                  let chunkJSON = String(data: chunkData, encoding: .utf8) else {
+                print("[AdBlock] ❌ Failed to serialize chunk \(index)")
+                group.leave()
+                continue
+            }
+            
+            let identifier = "easylist_chunk_\(index)"
+            store?.compileContentRuleList(forIdentifier: identifier, encodedContentRuleList: chunkJSON) { ruleList, error in
                 if let ruleList = ruleList {
                     compiled.append(ruleList)
-                    successCount += 1
+                    print("[AdBlock] ✅ Compiled chunk \(index): \(chunk.count) rules")
                 } else if let error = error {
-                    failCount += 1
-                    print("[AdBlock] ❌ Chunk \(index) FAILED: \(error.localizedDescription)")
+                    print("[AdBlock] ❌ Chunk \(index) compilation failed: \(error.localizedDescription)")
                 }
                 group.leave()
             }
@@ -91,412 +216,241 @@ class AdBlockEngine: ObservableObject {
         group.notify(queue: .main) { [weak self] in
             guard let self = self else { return }
             self.compiledRuleLists = compiled
-            self.isCompiled = true
+            self.isCompiling = false
             self.needsRecompile = false
             
-            let domainCount = AdBlockRules.blockDomainRules.count
-            if successCount > 0 {
-                self.filterInfo = "\(domainCount)+ domain engeli aktif"
-            } else {
-                self.filterInfo = "JS + domain engeli aktif"
-            }
-            print("[AdBlock] ✅ Compiled: \(successCount) chunks OK, \(failCount) failed, \(domainCount) domains in fallback")
+            let totalCompiled = compiled.reduce(0) { $0 + 1 }
+            self.filterInfo = "\(totalRules) kural — \(totalCompiled)/\(chunks.count) grup aktif"
+            
+            print("[AdBlock] 🎯 Compilation complete: \(compiled.count)/\(chunks.count) chunks compiled successfully")
             completion()
         }
     }
     
-    // MARK: - Apply Rules to WebView
-    func applyRules(to contentController: WKUserContentController) {
-        contentController.removeAllContentRuleLists()
-        guard isEnabled else { return }
-        for ruleList in compiledRuleLists {
-            contentController.add(ruleList)
+    // MARK: - Embedded Fallback (if download fails)
+    private func compileEmbeddedFallback(completion: @escaping () -> Void) {
+        let fallbackRules = Self.embeddedFallbackRules
+        
+        let store = WKContentRuleListStore.default()
+        store?.compileContentRuleList(forIdentifier: "embedded_fallback", encodedContentRuleList: fallbackRules) { [weak self] ruleList, error in
+            DispatchQueue.main.async {
+                if let ruleList = ruleList {
+                    self?.compiledRuleLists = [ruleList]
+                    self?.filterInfo = "Yedek kurallar aktif"
+                    print("[AdBlock] ✅ Embedded fallback compiled")
+                } else {
+                    self?.compiledRuleLists = []
+                    self?.filterInfo = "Kurallar derlenemedi"
+                    print("[AdBlock] ❌ Even fallback failed: \(error?.localizedDescription ?? "unknown")")
+                }
+                self?.isCompiling = false
+                self?.needsRecompile = false
+                completion()
+            }
         }
     }
     
-    // MARK: - Layer 3: JavaScript Cosmetic Filter + Ad Element Hider
+    // MARK: - Apply Rules to WKUserContentController
+    func applyRules(to controller: WKUserContentController) {
+        // Remove old rules
+        controller.removeAllContentRuleLists()
+        
+        guard isEnabled else { return }
+        
+        // Add all compiled rule lists
+        for ruleList in compiledRuleLists {
+            controller.add(ruleList)
+        }
+        
+        print("[AdBlock] 📎 Applied \(compiledRuleLists.count) rule list(s) to WebView")
+        
+        // Layer 3: Add cosmetic filter JS
+        let cosmeticScript = WKUserScript(
+            source: Self.cosmeticFilterScript,
+            injectionTime: .atDocumentEnd,
+            forMainFrameOnly: false // Run in all frames to catch iframe ads
+        )
+        controller.addUserScript(cosmeticScript)
+        
+        // YouTube ad skip
+        let ytScript = WKUserScript(
+            source: Self.youtubeAdSkipScript,
+            injectionTime: .atDocumentEnd,
+            forMainFrameOnly: true
+        )
+        controller.addUserScript(ytScript)
+    }
+    
+    // MARK: - Layer 2: URL Blocking (decidePolicyFor fallback)
+    func shouldBlockURL(_ url: URL) -> Bool {
+        guard isEnabled else { return false }
+        guard let host = url.host?.lowercased() else { return false }
+        
+        for keyword in blockedDomainKeywords {
+            if host.contains(keyword) {
+                return true
+            }
+        }
+        return false
+    }
+    
+    // MARK: - Handle Blocked Ad
+    func handleBlockedAd(count: Int, domain: String) {
+        DispatchQueue.main.async {
+            self.blockedAdsCount += count
+            if !domain.isEmpty {
+                self.lastBlockedDomain = domain
+            }
+        }
+    }
+    
+    // MARK: - Cache Path
+    private func getCacheFileURL() -> URL? {
+        guard let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
+            return nil
+        }
+        return docs.appendingPathComponent(cacheFileName)
+    }
+    
+    // MARK: - Embedded Fallback Rules (minimal, pre-validated)
+    // These are real Safari Content Blocker JSON — tested and known to compile
+    static let embeddedFallbackRules: String = """
+    [
+        {"trigger":{"url-filter":"^https?://.*doubleclick\\\\.net"},"action":{"type":"block"}},
+        {"trigger":{"url-filter":"^https?://.*googlesyndication\\\\.com"},"action":{"type":"block"}},
+        {"trigger":{"url-filter":"^https?://.*googleadservices\\\\.com"},"action":{"type":"block"}},
+        {"trigger":{"url-filter":"^https?://.*google-analytics\\\\.com"},"action":{"type":"block"}},
+        {"trigger":{"url-filter":"^https?://.*googletagmanager\\\\.com"},"action":{"type":"block"}},
+        {"trigger":{"url-filter":"^https?://.*adnxs\\\\.com"},"action":{"type":"block"}},
+        {"trigger":{"url-filter":"^https?://.*adsrvr\\\\.org"},"action":{"type":"block"}},
+        {"trigger":{"url-filter":"^https?://.*taboola\\\\.com"},"action":{"type":"block"}},
+        {"trigger":{"url-filter":"^https?://.*outbrain\\\\.com"},"action":{"type":"block"}},
+        {"trigger":{"url-filter":"^https?://.*criteo\\\\.(com|net)"},"action":{"type":"block"}},
+        {"trigger":{"url-filter":"^https?://.*moatads\\\\.com"},"action":{"type":"block"}},
+        {"trigger":{"url-filter":"^https?://.*amazon-adsystem\\\\.com"},"action":{"type":"block"}},
+        {"trigger":{"url-filter":"^https?://.*rubiconproject\\\\.com"},"action":{"type":"block"}},
+        {"trigger":{"url-filter":"^https?://.*pubmatic\\\\.com"},"action":{"type":"block"}},
+        {"trigger":{"url-filter":"^https?://.*openx\\\\.net"},"action":{"type":"block"}},
+        {"trigger":{"url-filter":"^https?://.*casalemedia\\\\.com"},"action":{"type":"block"}},
+        {"trigger":{"url-filter":"^https?://.*smartadserver\\\\.com"},"action":{"type":"block"}},
+        {"trigger":{"url-filter":"^https?://.*bidswitch\\\\.net"},"action":{"type":"block"}},
+        {"trigger":{"url-filter":"^https?://.*admob\\\\.com"},"action":{"type":"block"}},
+        {"trigger":{"url-filter":"^https?://.*2mdn\\\\.net"},"action":{"type":"block"}},
+        {"trigger":{"url-filter":"^https?://.*advertising\\\\.com"},"action":{"type":"block"}},
+        {"trigger":{"url-filter":"^https?://.*adform\\\\.net"},"action":{"type":"block"}},
+        {"trigger":{"url-filter":"^https?://.*nr-data\\\\.net"},"action":{"type":"block"}},
+        {"trigger":{"url-filter":"^https?://.*yieldmanager\\\\.com"},"action":{"type":"block"}},
+        {"trigger":{"url-filter":"^https?://.*adcolony\\\\.com"},"action":{"type":"block"}},
+        {"trigger":{"url-filter":"^https?://.*applovin\\\\.com"},"action":{"type":"block"}},
+        {"trigger":{"url-filter":"^https?://.*vungle\\\\.com"},"action":{"type":"block"}},
+        {"trigger":{"url-filter":"^https?://.*chartboost\\\\.com"},"action":{"type":"block"}},
+        {"trigger":{"url-filter":"^https?://.*inmobi\\\\.com"},"action":{"type":"block"}},
+        {"trigger":{"url-filter":"^https?://.*smaato\\\\.net"},"action":{"type":"block"}},
+        {"trigger":{"url-filter":"^https?://"},"action":{"type":"css-display-none","selector":".adsbygoogle"}},
+        {"trigger":{"url-filter":"^https?://"},"action":{"type":"css-display-none","selector":"[id^=\\"google_ads\\"]"}},
+        {"trigger":{"url-filter":"^https?://"},"action":{"type":"css-display-none","selector":"[id^=\\"div-gpt-ad\\"]"}},
+        {"trigger":{"url-filter":"^https?://"},"action":{"type":"css-display-none","selector":"[class*=\\"ad-container\\"]"}},
+        {"trigger":{"url-filter":"^https?://"},"action":{"type":"css-display-none","selector":"[class*=\\"ad-wrapper\\"]"}},
+        {"trigger":{"url-filter":"^https?://"},"action":{"type":"css-display-none","selector":"[class*=\\"ad-banner\\"]"}},
+        {"trigger":{"url-filter":"^https?://"},"action":{"type":"css-display-none","selector":"[class*=\\"sponsored\\"]"}},
+        {"trigger":{"url-filter":"^https?://"},"action":{"type":"css-display-none","selector":"ins.adsbygoogle"}},
+        {"trigger":{"url-filter":"^https?://"},"action":{"type":"css-display-none","selector":"amp-ad"}},
+        {"trigger":{"url-filter":"^https?://"},"action":{"type":"css-display-none","selector":"AMP-AD"}}
+    ]
+    """
+    
+    // MARK: - Layer 3: Cosmetic Filter Script
     static let cosmeticFilterScript: String = """
     (function() {
         'use strict';
-        
-        // ===== ELEMENT HIDING (cosmetic filter) =====
-        const adSelectors = [
-            // Generic ad containers
-            'ins.adsbygoogle', '.adsbygoogle', '[id^="google_ads"]',
-            '[id^="div-gpt-ad"]', '[class*="ad-container"]', '[class*="ad-wrapper"]',
-            '[class*="ad-banner"]', '[class*="ad_banner"]', '[class*="advertisement"]',
-            '[class*="sponsored"]', '[id*="ad-container"]', '[id*="ad_container"]',
-            '[data-ad]', '[data-ad-slot]', '[data-google-query-id]',
-            
-            // Specific ad networks
+        const selectors = [
+            '.adsbygoogle', 'ins.adsbygoogle', '[id^="google_ads"]', '[id^="div-gpt-ad"]',
+            '[class*="ad-container"]', '[class*="ad-wrapper"]', '[class*="ad-banner"]',
+            '[class*="adunit"]', '[class*="ad-slot"]', '[class*="ad_unit"]',
+            '[class*="sponsored"]', '[class*="ad-placement"]',
             'iframe[src*="doubleclick"]', 'iframe[src*="googlesyndication"]',
-            'iframe[src*="amazon-adsystem"]', 'iframe[src*="facebook.com/plugins"]',
-            'iframe[id^="google_ads"]', 'iframe[id^="aswift"]',
-            
-            // YouTube ads
-            '.ytp-ad-module', '.ytp-ad-overlay-container', '.ytp-ad-text-overlay',
-            '.video-ads', '.ad-showing', '#masthead-ad', '#player-ads',
-            'ytd-promoted-sparkles-web-renderer', 'ytd-display-ad-renderer',
-            'ytd-companion-slot-renderer', 'ytd-action-companion-ad-renderer',
-            'ytd-promoted-video-renderer', 'ytd-ad-slot-renderer',
-            '.ytd-banner-promo-renderer', 'ytd-in-feed-ad-layout-renderer',
-            '#related ytd-promoted-sparkles-web-renderer',
-            
-            // Pop-ups and overlays
-            '[class*="popup-ad"]', '[class*="interstitial"]',
-            '[class*="modal-ad"]', '[class*="overlay-ad"]',
-            
-            // Cookie banners
-            '#onetrust-consent-sdk', '#onetrust-banner-sdk',
-            '#CybotCookiebotDialog', '#CybotCookiebotDialogOverlay',
-            '.cookie-consent', '.cookie-banner', '.cookie-notice',
-            '#cookie-notice', '#cookie-law-info-bar',
-            '.cc-banner', '.cc-window', '.js-cookie-consent',
-            '#gdpr-cookie-notice', '.cookie-popup', '#cookie-popup',
-            '[class*="cookie-consent"]', '[class*="cookie-banner"]',
-            '.consent-banner', '#consent-banner', '.gdpr-banner',
-            '#cookiescript_injected', '.cookie-overlay', '#cookie-bar',
-            
-            // Social widgets (tracking)
-            '.fb-like', '.twitter-share-button'
+            'iframe[src*="adnxs"]', 'iframe[src*="taboola"]',
+            '[id*="taboola"]', '[class*="taboola"]',
+            '[id*="outbrain"]', '[class*="outbrain"]',
+            '.trc_related_container', '#taboola-below-article',
+            '#cookie-banner', '#cookie-notice', '[class*="cookie-consent"]',
+            '[class*="cookie-banner"]', '[class*="cookie-notice"]',
+            '[id*="cookie-popup"]', '[class*="gdpr"]',
+            '[id*="consent-banner"]', '[class*="consent-banner"]'
         ];
         
-        function hideAds() {
-            let count = 0;
-            const combinedSelector = adSelectors.join(',');
-            try {
-                document.querySelectorAll(combinedSelector).forEach(function(el) {
-                    if (el.offsetHeight > 0 || el.style.display !== 'none') {
-                        el.style.setProperty('display', 'none', 'important');
-                        el.style.setProperty('visibility', 'hidden', 'important');
-                        el.style.setProperty('height', '0', 'important');
-                        el.style.setProperty('overflow', 'hidden', 'important');
-                        count++;
-                    }
-                });
-            } catch(e) {}
-            
-            if (count > 0) {
-                try {
-                    window.webkit.messageHandlers.adBlocked.postMessage({
-                        count: count, total: 0, url: window.location.href
-                    });
-                } catch(e) {}
+        let hiddenCount = 0;
+        
+        function hideElements() {
+            const joined = selectors.join(',');
+            document.querySelectorAll(joined).forEach(el => {
+                if (el.style.display !== 'none') {
+                    el.style.setProperty('display', 'none', 'important');
+                    hiddenCount++;
+                }
+            });
+            if (hiddenCount > 0 && window.webkit && window.webkit.messageHandlers.adBlocked) {
+                window.webkit.messageHandlers.adBlocked.postMessage({count: hiddenCount, url: location.hostname});
+                hiddenCount = 0;
             }
         }
         
-        // ===== COOKIE BANNER AUTO-DISMISS =====
-        function dismissCookies() {
-            const acceptBtns = document.querySelectorAll(
-                '[class*="cookie"] button[class*="accept"], [class*="cookie"] button[class*="agree"], ' +
-                '#onetrust-accept-btn-handler, #CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll, ' +
-                '.cc-accept, .cc-dismiss, .cc-allow, button[data-cookie-accept]'
-            );
-            acceptBtns.forEach(function(btn) { try { btn.click(); } catch(e) {} });
-            
-            document.body.style.overflow = '';
-            document.documentElement.style.overflow = '';
-        }
-        
-        // ===== YOUTUBE AD SKIP =====
-        function skipYouTubeAds() {
-            if (!window.location.hostname.includes('youtube.com')) return;
-            
-            const skipBtn = document.querySelector(
-                '.ytp-ad-skip-button, .ytp-ad-skip-button-modern, .ytp-skip-ad-button, ' +
-                'button.ytp-ad-skip-button-modern, .ytp-ad-skip-button-slot'
-            );
-            if (skipBtn) {
-                skipBtn.click();
-                try { window.webkit.messageHandlers.adBlocked.postMessage({count:1,total:0,url:window.location.href}); } catch(e) {}
-            }
-            
-            const video = document.querySelector('video');
-            const adShowing = document.querySelector('.ad-showing, .ytp-ad-player-overlay');
-            if (video && adShowing) {
-                video.playbackRate = 16;
-                video.currentTime = video.duration || 999;
-            }
-        }
-        
-        // ===== RUN =====
-        // Initial run after page load
-        function run() {
-            hideAds();
-            dismissCookies();
-            skipYouTubeAds();
-        }
+        // Run immediately
+        hideElements();
         
         // Run on DOMContentLoaded
         if (document.readyState === 'loading') {
-            document.addEventListener('DOMContentLoaded', function() { setTimeout(run, 300); });
-        } else {
-            setTimeout(run, 300);
+            document.addEventListener('DOMContentLoaded', hideElements);
         }
         
-        // Run again after full load
-        window.addEventListener('load', function() { setTimeout(run, 1000); });
-        
-        // Bounded MutationObserver — checks for new ads, auto-disconnects after 30 seconds
-        let observerChecks = 0;
-        const maxChecks = 50;
-        const observer = new MutationObserver(function() {
-            observerChecks++;
-            if (observerChecks <= maxChecks) {
-                setTimeout(function() { hideAds(); skipYouTubeAds(); }, 200);
-            } else {
+        // Bounded MutationObserver — max 30 seconds
+        let checkCount = 0;
+        const maxChecks = 100;
+        const observer = new MutationObserver(() => {
+            checkCount++;
+            if (checkCount >= maxChecks) {
                 observer.disconnect();
+                return;
             }
+            hideElements();
         });
-        observer.observe(document.documentElement, { childList: true, subtree: true });
         
-        // Force observer disconnect after 30 seconds
-        setTimeout(function() { observer.disconnect(); }, 30000);
+        observer.observe(document.documentElement, {
+            childList: true,
+            subtree: true
+        });
         
-        // Periodic check for YouTube (needs ongoing monitoring for ads)
-        if (window.location.hostname.includes('youtube.com')) {
-            let ytChecks = 0;
-            const ytInterval = setInterval(function() {
-                ytChecks++;
-                skipYouTubeAds();
-                hideAds();
-                if (ytChecks > 120) clearInterval(ytInterval); // Stop after 2 minutes
-            }, 1000);
-        }
-        
+        setTimeout(() => observer.disconnect(), 30000);
     })();
-    """;
+    """
     
-    // MARK: - Create User Scripts (Layer 3)
-    func createUserScripts() -> [WKUserScript] {
-        guard isEnabled else { return [] }
+    // MARK: - YouTube Ad Skip Script
+    static let youtubeAdSkipScript: String = """
+    (function() {
+        'use strict';
+        if (!location.hostname.includes('youtube.com')) return;
         
-        return [
-            WKUserScript(
-                source: Self.cosmeticFilterScript,
-                injectionTime: .atDocumentEnd,
-                forMainFrameOnly: true
-            )
-        ]
-    }
-    
-    // MARK: - Handle Blocked Ad Notification
-    func handleBlockedAd(count: Int, domain: String) {
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
-            self.totalBlockedAds += max(count, 1)
-            self.lastBlockedDomain = domain
-            self.showBanner = true
+        const skipInterval = setInterval(() => {
+            // Click skip button
+            const skipBtn = document.querySelector('.ytp-skip-ad-button, .ytp-ad-skip-button, .ytp-ad-skip-button-modern, [class*="skip-button"]');
+            if (skipBtn) { skipBtn.click(); return; }
             
-            self.bannerHideWorkItem?.cancel()
-            let workItem = DispatchWorkItem { [weak self] in
-                withAnimation(.easeOut(duration: 0.3)) {
-                    self?.showBanner = false
-                }
+            // Speed through unskippable ads
+            const video = document.querySelector('video');
+            const adOverlay = document.querySelector('.ad-showing, .ytp-ad-player-overlay');
+            if (video && adOverlay) {
+                video.currentTime = video.duration || 999;
+                video.playbackRate = 16;
             }
-            self.bannerHideWorkItem = workItem
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0, execute: workItem)
-        }
-    }
-    
-    func resetCount() {
-        totalBlockedAds = 0
-    }
-}
-
-// MARK: - Native Content Blocking Rules (Layer 1)
-struct AdBlockRules {
-    
-    // MARK: - Generate Safe JSON Rules
-    // Each rule is validated individually — bad rules are skipped
-    static func generateChunkedRules() -> [String] {
-        var allRules: [[String: Any]] = []
-        
-        // 1. Domain block rules — use safe regex
-        for domain in blockDomainRules {
-            let escaped = domain
-                .replacingOccurrences(of: ".", with: "\\\\.")
             
-            allRules.append([
-                "trigger": ["url-filter": escaped] as [String: Any],
-                "action": ["type": "block"]
-            ])
-        }
+            // Remove ad overlays
+            document.querySelectorAll('.ytp-ad-overlay-container, .ytp-ad-text-overlay, #player-ads').forEach(el => {
+                el.remove();
+            });
+        }, 500);
         
-        // 2. CSS hide rules  
-        for selector in cssHideSelectors {
-            allRules.append([
-                "trigger": ["url-filter": ".*"] as [String: Any],
-                "action": [
-                    "type": "css-display-none",
-                    "selector": selector
-                ] as [String: Any]
-            ])
-        }
-        
-        // Chunk into smaller groups (150 rules per chunk to avoid compile failures)
-        let chunkSize = 150
-        var chunks: [String] = []
-        
-        for i in stride(from: 0, to: allRules.count, by: chunkSize) {
-            let end = min(i + chunkSize, allRules.count)
-            let chunk = Array(allRules[i..<end])
-            
-            if let jsonData = try? JSONSerialization.data(withJSONObject: chunk, options: []),
-               let jsonString = String(data: jsonData, encoding: .utf8) {
-                chunks.append(jsonString)
-            }
-        }
-        
-        return chunks
-    }
-    
-    // MARK: - Blocked Domains (used by both Layer 1 and Layer 2)
-    static let blockDomainRules: [String] = [
-        // === Google Ads ===
-        "googleads.g.doubleclick.net",
-        "pagead2.googlesyndication.com",
-        "adservice.google.com",
-        "www.googleadservices.com",
-        "googleadservices.com",
-        "tpc.googlesyndication.com",
-        "ad.doubleclick.net",
-        "stats.g.doubleclick.net",
-        "securepubads.g.doubleclick.net",
-        "s0.2mdn.net",
-        "pagead2.googleadservices.com",
-        
-        // === YouTube Ads ===
-        "imasdk.googleapis.com",
-        
-        // === Facebook / Meta ===
-        "connect.facebook.net",
-        "pixel.facebook.com",
-        "an.facebook.com",
-        
-        // === Amazon Ads ===
-        "aax-us-east.amazon-adsystem.com",
-        "z-na.amazon-adsystem.com",
-        "fls-na.amazon-adsystem.com",
-        "c.amazon-adsystem.com",
-        "s.amazon-adsystem.com",
-        
-        // === Ad Networks ===
-        "ads.pubmatic.com",
-        "hbopenbid.pubmatic.com",
-        "image6.pubmatic.com",
-        "ads.yahoo.com",
-        "adtech.yahooinc.com",
-        "cdn.taboola.com",
-        "trc.taboola.com",
-        "api.taboola.com",
-        "nr.taboola.com",
-        "cdn.outbrain.com",
-        "widgets.outbrain.com",
-        "log.outbrain.com",
-        "ads.twitter.com",
-        "analytics.twitter.com",
-        
-        // === Tracking ===
-        "www.google-analytics.com",
-        "google-analytics.com",
-        "ssl.google-analytics.com",
-        "bat.bing.com",
-        "clarity.ms",
-        "www.clarity.ms",
-        "static.hotjar.com",
-        "script.hotjar.com",
-        "in.hotjar.com",
-        "www.googletagmanager.com",
-        "googletagmanager.com",
-        
-        // === Ad Exchanges ===
-        "ib.adnxs.com",
-        "secure.adnxs.com",
-        "acdn.adnxs.com",
-        "ads.rubiconproject.com",
-        "fastlane.rubiconproject.com",
-        "ads.openx.net",
-        "u.openx.net",
-        
-        // === Mobile Ad Networks ===
-        "ads.mopub.com",
-        "app.adjust.com",
-        "view.adjust.com",
-        "app.appsflyer.com",
-        "sdk.appsflyer.com",
-        "cdn.branch.io",
-        
-        // === Push/Popup ===
-        "cdn.onesignal.com",
-        "onesignal.com",
-        "cdn.pushwoosh.com",
-        
-        // === Criteo ===
-        "dis.eu.criteo.com",
-        "static.criteo.net",
-        "gum.criteo.com",
-        
-        // === Other Trackers ===
-        "cdn.segment.com",
-        "api.segment.io",
-        "cdn.mxpnl.com",
-        "cdn.amplitude.com",
-        "api.amplitude.com",
-        "cdn.fullstory.com",
-        "cdn.mouseflow.com",
-        "js.hs-scripts.com",
-        "track.hubspot.com",
-        "a.scorecardresearch.com",
-        "pixel.quantserve.com",
-        "js-agent.newrelic.com",
-        "bam.nr-data.net",
-        "dpm.demdex.net",
-        "cdn.cookielaw.org",
-        
-        // === Yandex ===
-        "mc.yandex.ru",
-        "an.yandex.ru",
-        "ads.yandex.ru",
-        
-        // === Turkish Ad Networks ===
-        "ads.sahibinden.com",
-        "ad.mncdn.com",
-        "reklam.hurriyet.com.tr",
-        "ads.sozcu.com.tr",
-        "reklam.mynet.com",
-        "ads.milliyet.com.tr",
-        
-        // === LinkedIn / Snap ===
-        "px.ads.linkedin.com",
-        "snap.licdn.com",
-        "tr.snapchat.com",
-        
-        // === Misc ===
-        "match.adsrvr.org",
-        "insight.adsrvr.org",
-        "adserver.adtechus.com",
-        "id5-sync.com",
-        "cdn.sharethrough.com",
-        "scdn.cxense.com"
-    ]
-    
-    // MARK: - CSS Hide Selectors (for native css-display-none)
-    static let cssHideSelectors: [String] = [
-        "ins.adsbygoogle",
-        ".adsbygoogle",
-        "[id^=\"google_ads\"]",
-        "[id^=\"div-gpt-ad\"]",
-        "[data-ad-slot]",
-        "[data-google-query-id]",
-        ".ytp-ad-module",
-        ".ytp-ad-overlay-container",
-        ".video-ads",
-        "#masthead-ad",
-        "#player-ads",
-        "ytd-promoted-sparkles-web-renderer",
-        "ytd-display-ad-renderer",
-        "ytd-ad-slot-renderer",
-        "ytd-in-feed-ad-layout-renderer"
-    ]
+        // Stop after 2 minutes
+        setTimeout(() => clearInterval(skipInterval), 120000);
+    })();
+    """
 }

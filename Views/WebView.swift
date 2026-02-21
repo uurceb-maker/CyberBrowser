@@ -79,15 +79,11 @@ class WebViewStore: ObservableObject {
     func injectScripts() {
         let contentController = webView.configuration.userContentController
         contentController.removeAllUserScripts()
+        contentController.removeAllContentRuleLists()
         
-        // Native ad-block rules (WKContentRuleList — blazing fast)
+        // Native ad-block rules + cosmetic scripts (all handled by engine)
         if let engine = adBlockEngine {
             engine.applyRules(to: contentController)
-            
-            // Supplementary scripts (minimal YouTube ad skip only)
-            for script in engine.createUserScripts() {
-                contentController.addUserScript(script)
-            }
         }
         
         // Extension scripts — only inject for main frame by default
