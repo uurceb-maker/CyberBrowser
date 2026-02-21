@@ -219,7 +219,7 @@ class AdBlockEngine: ObservableObject {
             self.isCompiling = false
             self.needsRecompile = false
             
-            let totalCompiled = compiled.reduce(0) { $0 + 1 }
+            let totalCompiled = compiled.count
             self.filterInfo = "\(totalRules) kural — \(totalCompiled)/\(chunks.count) grup aktif"
             
             print("[AdBlock] 🎯 Compilation complete: \(compiled.count)/\(chunks.count) chunks compiled successfully")

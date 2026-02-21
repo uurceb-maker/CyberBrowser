@@ -8,7 +8,7 @@ struct AdBlockBanner: View {
     @State private var shieldScale: CGFloat = 1.0
     
     var body: some View {
-        if adBlockEngine.showBanner || adBlockEngine.totalBlockedAds > 0 {
+        if adBlockEngine.isEnabled || adBlockEngine.blockedAdsCount > 0 {
             HStack(spacing: 10) {
                 // Shield Icon with pulse animation
                 ZStack {
@@ -38,7 +38,7 @@ struct AdBlockBanner: View {
                             .foregroundColor(.cyberWhite.opacity(0.8))
                     }
                     
-                    if adBlockEngine.showBanner && !adBlockEngine.lastBlockedDomain.isEmpty {
+                    if !adBlockEngine.lastBlockedDomain.isEmpty {
                         Text(adBlockEngine.lastBlockedDomain)
                             .font(.system(size: 10, weight: .regular, design: .monospaced))
                             .foregroundColor(.cyberMuted)
@@ -74,8 +74,8 @@ struct AdBlockBanner: View {
             )
             .padding(.horizontal, CyberTheme.padding)
             .transition(.move(edge: .top).combined(with: .opacity))
-            .animation(.spring(response: 0.5, dampingFraction: 0.7), value: adBlockEngine.showBanner)
-            .onChange(of: adBlockEngine.totalBlockedAds) { newValue in
+            .animation(.spring(response: 0.5, dampingFraction: 0.7), value: adBlockEngine.isEnabled)
+            .onChange(of: adBlockEngine.blockedAdsCount) { newValue in
                 // Animate count change
                 withAnimation(.easeOut(duration: 0.3)) {
                     displayCount = newValue
@@ -92,7 +92,7 @@ struct AdBlockBanner: View {
                 }
             }
             .onAppear {
-                displayCount = adBlockEngine.totalBlockedAds
+                displayCount = adBlockEngine.blockedAdsCount
             }
         }
     }
