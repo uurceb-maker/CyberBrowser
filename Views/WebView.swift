@@ -23,12 +23,19 @@ class WebViewStore: ObservableObject {
     private(set) var webView: WKWebView!
     private var coordinator: WebViewCoordinator!
     
+    // Shared process pool for cookie/session consistency across tabs
+    private static let sharedProcessPool = WKProcessPool()
+    
     // Reference to managers (set from outside)
     weak var adBlockEngine: AdBlockEngine?
     weak var tabManager: TabManager?
     weak var extensionManager: ExtensionManager?
     
     private var isNavigatingProgrammatically = false
+    
+    // Snapshot throttling — only take snapshots every 5 seconds max
+    private var lastSnapshotTime: TimeInterval = 0
+    private let snapshotMinInterval: TimeInterval = 5.0
     
     init() {
         self.coordinator = WebViewCoordinator(store: self)
@@ -37,6 +44,9 @@ class WebViewStore: ObservableObject {
     
     private func createWebView() -> WKWebView {
         let config = WKWebViewConfiguration()
+        
+        // Use shared process pool for session consistency
+        config.processPool = Self.sharedProcessPool
         
         // Media playback
         config.allowsInlineMediaPlayback = true
@@ -65,24 +75,35 @@ class WebViewStore: ObservableObject {
         return wv
     }
     
-    // MARK: - Inject Scripts
+    // MARK: - Inject Scripts & Rules
     func injectScripts() {
         let contentController = webView.configuration.userContentController
         contentController.removeAllUserScripts()
         
-        // Ad-block scripts
+        // Native ad-block rules (WKContentRuleList — blazing fast)
         if let engine = adBlockEngine {
+            engine.applyRules(to: contentController)
+            
+            // Supplementary scripts (minimal YouTube ad skip only)
             for script in engine.createUserScripts() {
                 contentController.addUserScript(script)
             }
         }
         
-        // Extension scripts
+        // Extension scripts — only inject for main frame by default
         if let extManager = extensionManager {
             let currentURL = webView.url ?? URL(string: "https://www.google.com")!
             for script in extManager.activeUserScripts(for: currentURL) {
                 contentController.addUserScript(script)
             }
+        }
+    }
+    
+    // MARK: - Compile Native Rules
+    func compileAdBlockRules(completion: @escaping () -> Void) {
+        adBlockEngine?.compileRules { [weak self] in
+            self?.injectScripts()
+            completion()
         }
     }
     
@@ -161,11 +182,27 @@ class WebViewStore: ObservableObject {
                 )
             }
             
-            // Take snapshot for tab manager (throttled)
-            self.webView.takeSnapshot(with: nil) { [weak self] image, _ in
-                if let image = image {
-                    DispatchQueue.main.async {
-                        self?.tabManager?.updateActiveTab(snapshot: image)
+            // Throttled snapshot — only take one every 5 seconds
+            let now = Date().timeIntervalSince1970
+            if now - self.lastSnapshotTime > self.snapshotMinInterval {
+                self.lastSnapshotTime = now
+                
+                // Use smaller snapshot config for memory efficiency
+                let snapshotConfig = WKSnapshotConfiguration()
+                snapshotConfig.afterScreenUpdates = false
+                
+                self.webView.takeSnapshot(with: snapshotConfig) { [weak self] image, _ in
+                    if let image = image {
+                        // Downscale for tab thumbnail (saves memory)
+                        let thumbSize = CGSize(width: 200, height: 300)
+                        UIGraphicsBeginImageContextWithOptions(thumbSize, true, 1.0)
+                        image.draw(in: CGRect(origin: .zero, size: thumbSize))
+                        let thumbnail = UIGraphicsGetImageFromCurrentImageContext()
+                        UIGraphicsEndImageContext()
+                        
+                        DispatchQueue.main.async {
+                            self?.tabManager?.updateActiveTab(snapshot: thumbnail)
+                        }
                     }
                 }
             }
@@ -234,16 +271,8 @@ class WebViewCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScript
             return
         }
         
-        let host = url.host?.lowercased() ?? ""
-        
-        // Check if ad-blocking is enabled and URL matches blocked domain
-        if let engine = store?.adBlockEngine, engine.isEnabled {
-            if engine.isBlockedDomain(host) {
-                decisionHandler(.cancel)
-                engine.handleBlockedAd(count: 1, domain: host)
-                return
-            }
-        }
+        // Note: Domain-level ad blocking is now handled natively by WKContentRuleList
+        // No need for manual domain checking here — WebKit blocks them at the engine level
         
         // Handle links that try to open new windows — load in same webview
         if navigationAction.targetFrame == nil {

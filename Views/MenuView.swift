@@ -43,7 +43,7 @@ struct MenuView: View {
                                 icon: "shield.checkered",
                                 iconColor: .cyberYellow,
                                 title: "Reklam Engelleme",
-                                subtitle: "\(adBlockEngine.totalBlockedAds) reklam engellendi",
+                                subtitle: adBlockEngine.isEnabled ? "\(adBlockEngine.filterInfo) — \(adBlockEngine.totalBlockedAds) engellendi" : "Devre dışı",
                                 isOn: $adBlockEngine.isEnabled
                             )
                             
@@ -122,7 +122,7 @@ struct MenuView: View {
                                 icon: "info.circle",
                                 iconColor: .cyberMuted,
                                 title: "CyberBrowser",
-                                subtitle: "Versiyon 1.0 — Cyberpunk Editon",
+                                subtitle: "Versiyon 2.0 — Native AdBlock Engine",
                                 status: "",
                                 statusColor: .clear
                             )

@@ -13,6 +13,7 @@ struct ContentView: View {
     @State private var showMenu: Bool = false
     @State private var showTabManager: Bool = false
     @State private var displayURL: String = "https://www.google.com"
+    @State private var isInitialized: Bool = false
     
     var body: some View {
         ZStack {
@@ -96,17 +97,23 @@ struct ContentView: View {
         }
         .statusBarHidden(false)
         .onAppear {
+            guard !isInitialized else { return }
+            isInitialized = true
+            
             // Connect stores
             webViewStore.adBlockEngine = adBlockEngine
             webViewStore.tabManager = tabManager
             webViewStore.extensionManager = extensionManager
             
-            // Inject scripts
-            webViewStore.injectScripts()
-            
-            // Load initial URL
-            let initialURL = tabManager.activeTab.url
-            webViewStore.loadURL(initialURL)
+            // Compile native ad-block rules, then load page
+            webViewStore.compileAdBlockRules {
+                // Inject extension scripts after rules are compiled
+                webViewStore.injectScripts()
+                
+                // Load initial URL
+                let initialURL = tabManager.activeTab.url
+                webViewStore.loadURL(initialURL)
+            }
         }
         .onChange(of: webViewStore.currentURLString) { newURL in
             displayURL = newURL
@@ -116,6 +123,15 @@ struct ContentView: View {
             let tab = tabManager.activeTab
             webViewStore.loadURL(tab.url)
             displayURL = tab.url.absoluteString
+        }
+        .onChange(of: adBlockEngine.isEnabled) { _ in
+            // Recompile and re-inject when ad blocking is toggled
+            if adBlockEngine.needsRecompile {
+                webViewStore.compileAdBlockRules {
+                    webViewStore.injectScripts()
+                    webViewStore.reload()
+                }
+            }
         }
         .fullScreenCover(isPresented: $showTabManager) {
             TabManagerView(

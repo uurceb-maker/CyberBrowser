@@ -53,7 +53,7 @@ struct ExtensionScript: Identifiable, Codable {
         code: String,
         injectionTime: ScriptInjectionTime = .atDocumentEnd,
         matchPatterns: [String] = ["*"],
-        mainFrameOnly: Bool = false
+        mainFrameOnly: Bool = true // Default to main frame only for performance
     ) {
         self.id = id
         self.code = code
@@ -95,6 +95,10 @@ class ExtensionManager: ObservableObject {
                     ExtensionScript(
                         code: """
                         (function() {
+                            // Only apply if site doesn't already support dark mode
+                            if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+                                return; // Site already handles dark mode
+                            }
                             const style = document.createElement('style');
                             style.textContent = `
                                 html {
@@ -109,7 +113,8 @@ class ExtensionManager: ObservableObject {
                         })();
                         """,
                         injectionTime: .atDocumentStart,
-                        matchPatterns: ["*"]
+                        matchPatterns: ["*"],
+                        mainFrameOnly: true
                     )
                 ],
                 permissions: ["all_urls"],
@@ -142,14 +147,17 @@ class ExtensionManager: ObservableObject {
                                 // Clean up non-text elements
                                 document.querySelectorAll('script, style, iframe, nav, footer, header, aside, .ad, .ads, .sidebar').forEach(el => el.remove());
                                 
-                                window.webkit.messageHandlers.extensionAction.postMessage({
-                                    action: 'readerMode',
-                                    status: 'activated'
-                                });
+                                try {
+                                    window.webkit.messageHandlers.extensionAction.postMessage({
+                                        action: 'readerMode',
+                                        status: 'activated'
+                                    });
+                                } catch(e) {}
                             };
                         })();
                         """,
-                        injectionTime: .atDocumentEnd
+                        injectionTime: .atDocumentEnd,
+                        mainFrameOnly: true
                     )
                 ],
                 permissions: ["all_urls"],
@@ -161,7 +169,7 @@ class ExtensionManager: ObservableObject {
             BrowserExtension(
                 name: "Gizlilik Kalkanı",
                 description: "Parmak izi takibini ve canvas fingerprinting'i engeller",
-                version: "1.0",
+                version: "2.0",
                 isEnabled: true,
                 contentScripts: [
                     ExtensionScript(
@@ -169,7 +177,7 @@ class ExtensionManager: ObservableObject {
                         (function() {
                             'use strict';
                             
-                            // Block canvas fingerprinting
+                            // Block canvas fingerprinting with minimal overhead
                             const origToDataURL = HTMLCanvasElement.prototype.toDataURL;
                             HTMLCanvasElement.prototype.toDataURL = function(type) {
                                 if (this.width > 16 && this.height > 16) {
@@ -177,7 +185,7 @@ class ExtensionManager: ObservableObject {
                                     if (ctx) {
                                         const imageData = ctx.getImageData(0, 0, this.width, this.height);
                                         for (let i = 0; i < imageData.data.length; i += 4) {
-                                            imageData.data[i] ^= 1; // Tiny noise
+                                            imageData.data[i] ^= 1;
                                         }
                                         ctx.putImageData(imageData, 0, 0);
                                     }
@@ -186,13 +194,12 @@ class ExtensionManager: ObservableObject {
                             };
                             
                             // Block WebGL fingerprinting
-                            const getParameterOrig = WebGLRenderingContext.prototype.getParameter;
+                            const getParamOrig = WebGLRenderingContext.prototype.getParameter;
                             WebGLRenderingContext.prototype.getParameter = function(param) {
-                                // RENDERER, VENDOR
                                 if (param === 0x1F01 || param === 0x1F00) {
                                     return 'CyberBrowser WebGL';
                                 }
-                                return getParameterOrig.apply(this, arguments);
+                                return getParamOrig.apply(this, arguments);
                             };
                             
                             // Block navigator enumeration
@@ -204,11 +211,28 @@ class ExtensionManager: ObservableObject {
                                 navigator.getBattery = () => Promise.reject('Blocked by CyberBrowser');
                             }
                             
-                            console.log('[CyberBrowser] Privacy Shield active');
+                            // Block AudioContext fingerprinting
+                            if (window.AudioContext) {
+                                const origGetFloatFrequencyData = AnalyserNode.prototype.getFloatFrequencyData;
+                                AnalyserNode.prototype.getFloatFrequencyData = function(array) {
+                                    origGetFloatFrequencyData.apply(this, arguments);
+                                    for (let i = 0; i < array.length; i++) {
+                                        array[i] += (Math.random() - 0.5) * 0.01;
+                                    }
+                                };
+                            }
+                            
+                            // Spoof screen resolution
+                            Object.defineProperty(screen, 'width', { get: () => 1920 });
+                            Object.defineProperty(screen, 'height', { get: () => 1080 });
+                            Object.defineProperty(screen, 'colorDepth', { get: () => 24 });
+                            
+                            console.log('[CyberBrowser] Privacy Shield v2.0 active');
                         })();
                         """,
                         injectionTime: .atDocumentStart,
-                        matchPatterns: ["*"]
+                        matchPatterns: ["*"],
+                        mainFrameOnly: true
                     )
                 ],
                 permissions: ["all_urls"],
@@ -216,11 +240,11 @@ class ExtensionManager: ObservableObject {
                 author: "CyberBrowser"
             ),
             
-            // Auto-Cookie Dismiss
+            // Auto-Cookie Dismiss — now using bounded observer
             BrowserExtension(
                 name: "Çerez Uyarısı Engelleyici",
                 description: "Çerez onay pop-up'larını otomatik kapatır",
-                version: "1.0",
+                version: "2.0",
                 isEnabled: true,
                 contentScripts: [
                     ExtensionScript(
@@ -242,7 +266,11 @@ class ExtensionManager: ObservableObject {
                                 '.privacy-banner', '#privacy-notice'
                             ];
                             
+                            let attempts = 0;
+                            const maxAttempts = 10;
+                            
                             function dismissCookies() {
+                                attempts++;
                                 cookieSelectors.forEach(selector => {
                                     document.querySelectorAll(selector).forEach(el => {
                                         el.style.display = 'none';
@@ -268,25 +296,32 @@ class ExtensionManager: ObservableObject {
                                 document.documentElement.style.overflow = '';
                             }
                             
-                            // Run on load and observe
+                            // Run once on load
                             if (document.readyState === 'loading') {
                                 document.addEventListener('DOMContentLoaded', () => setTimeout(dismissCookies, 500));
                             } else {
                                 setTimeout(dismissCookies, 500);
                             }
                             
-                            // Watch for late-loading consent dialogs
-                            const observer = new MutationObserver(() => setTimeout(dismissCookies, 300));
+                            // Bounded MutationObserver — max 10 checks, disconnect after 8 seconds
+                            const observer = new MutationObserver(() => {
+                                if (attempts < maxAttempts) {
+                                    setTimeout(dismissCookies, 300);
+                                } else {
+                                    observer.disconnect();
+                                }
+                            });
                             observer.observe(document.documentElement, { childList: true, subtree: true });
                             
-                            // Stop observing after 10 seconds
-                            setTimeout(() => observer.disconnect(), 10000);
+                            // Force disconnect after 8 seconds regardless
+                            setTimeout(() => observer.disconnect(), 8000);
                             
-                            console.log('[CyberBrowser] Cookie dismiss active');
+                            console.log('[CyberBrowser] Cookie dismiss v2.0 active');
                         })();
                         """,
                         injectionTime: .atDocumentEnd,
-                        matchPatterns: ["*"]
+                        matchPatterns: ["*"],
+                        mainFrameOnly: true
                     )
                 ],
                 permissions: ["all_urls"],
@@ -294,11 +329,11 @@ class ExtensionManager: ObservableObject {
                 author: "CyberBrowser"
             ),
             
-            // YouTube Enhancer
+            // YouTube Enhancer — optimized, no redundant ad blocking
             BrowserExtension(
                 name: "YouTube Geliştirici",
-                description: "YouTube'da reklam atlama, otomatik HD kalite ve mini oynatıcı",
-                version: "1.0",
+                description: "YouTube'da otomatik HD kalite ve mini oynatıcı",
+                version: "2.0",
                 isEnabled: true,
                 contentScripts: [
                     ExtensionScript(
@@ -316,43 +351,30 @@ class ExtensionManager: ObservableObject {
                                 }
                             }
                             
-                            // Auto-skip ads
-                            function skipAds() {
-                                const skipBtn = document.querySelector(
-                                    '.ytp-ad-skip-button, .ytp-ad-skip-button-modern, .ytp-skip-ad-button'
-                                );
-                                if (skipBtn) skipBtn.click();
-                                
-                                // Remove overlay ads
+                            // Clean sponsored content (cosmetic only — URL blocking done natively)
+                            let cleanAttempts = 0;
+                            function cleanUI() {
+                                cleanAttempts++;
                                 document.querySelectorAll(
-                                    '.ytp-ad-overlay-container, .ytp-ad-text-overlay'
+                                    'ytd-promoted-sparkles-web-renderer, ' +
+                                    'ytd-display-ad-renderer, .ytd-companion-slot-renderer, ' +
+                                    '#related ytd-promoted-sparkles-web-renderer'
                                 ).forEach(el => el.remove());
                                 
-                                // Speed through unskippable ads
-                                const video = document.querySelector('video');
-                                if (video && document.querySelector('.ad-showing')) {
-                                    video.currentTime = video.duration || 0;
+                                if (cleanAttempts < 20) {
+                                    setTimeout(cleanUI, 3000);
                                 }
                             }
                             
-                            // Remove suggestions overlay
-                            function cleanUI() {
-                                document.querySelectorAll(
-                                    '#masthead-ad, #player-ads, .ytd-promoted-sparkles-web-renderer, ' +
-                                    '.ytd-display-ad-renderer, .ytd-companion-slot-renderer, ' +
-                                    '#related ytd-promoted-sparkles-web-renderer'
-                                ).forEach(el => el.remove());
-                            }
-                            
-                            setInterval(skipAds, 500);
-                            setInterval(cleanUI, 2000);
                             setTimeout(setHDQuality, 3000);
+                            setTimeout(cleanUI, 2000);
                             
-                            console.log('[CyberBrowser] YouTube Enhancer active');
+                            console.log('[CyberBrowser] YouTube Enhancer v2.0 active');
                         })();
                         """,
                         injectionTime: .atDocumentEnd,
-                        matchPatterns: ["*://*.youtube.com/*"]
+                        matchPatterns: ["*://*.youtube.com/*"],
+                        mainFrameOnly: true
                     )
                 ],
                 permissions: ["*://*.youtube.com/*"],
@@ -394,7 +416,8 @@ class ExtensionManager: ObservableObject {
                 ExtensionScript(
                     code: code,
                     injectionTime: injectionTime,
-                    matchPatterns: ["*"]
+                    matchPatterns: ["*"],
+                    mainFrameOnly: true
                 )
             ],
             permissions: ["all_urls"],
@@ -425,13 +448,12 @@ class ExtensionManager: ObservableObject {
                 
                 let injTime: ScriptInjectionTime = runAt == "document_start" ? .atDocumentStart : .atDocumentEnd
                 
-                // Note: In a full implementation, JS file contents would be read from
-                // a bundled directory. Here we note the file paths.
                 for jsFile in jsFiles {
                     scripts.append(ExtensionScript(
                         code: "// Loaded from: \(jsFile)\n// Content would be loaded from extension bundle",
                         injectionTime: injTime,
-                        matchPatterns: matches
+                        matchPatterns: matches,
+                        mainFrameOnly: true
                     ))
                 }
             }
@@ -444,7 +466,8 @@ class ExtensionManager: ObservableObject {
                     scripts.append(ExtensionScript(
                         code: "// Background script: \(script)",
                         injectionTime: .atDocumentStart,
-                        matchPatterns: ["*"]
+                        matchPatterns: ["*"],
+                        mainFrameOnly: true
                     ))
                 }
             }
