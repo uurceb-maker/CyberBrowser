@@ -264,15 +264,26 @@ class WebViewCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScript
         }
     }
     
-    // MARK: - Navigation Policy
+    // MARK: - Navigation Policy (Layer 2: Domain blocking fallback)
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
         guard let url = navigationAction.request.url else {
             decisionHandler(.allow)
             return
         }
         
-        // Note: Domain-level ad blocking is now handled natively by WKContentRuleList
-        // No need for manual domain checking here — WebKit blocks them at the engine level
+        // Layer 2: Block ad domains at the navigation level
+        // This catches requests even if WKContentRuleList failed to compile
+        if let engine = store?.adBlockEngine, engine.isEnabled {
+            if engine.shouldBlockURL(url) {
+                print("[AdBlock] 🛡️ Blocked: \(url.host ?? url.absoluteString)")
+                DispatchQueue.main.async {
+                    engine.handleBlockedAd(count: 1, domain: url.host ?? "")
+                    self.store?.tabManager?.incrementBlockedAds()
+                }
+                decisionHandler(.cancel)
+                return
+            }
+        }
         
         // Handle links that try to open new windows — load in same webview
         if navigationAction.targetFrame == nil {

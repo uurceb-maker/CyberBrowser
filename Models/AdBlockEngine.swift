@@ -1,17 +1,16 @@
 import SwiftUI
 import WebKit
 
-// MARK: - Ad Block Engine (Native WKContentRuleList)
-// Uses Apple's native content blocking API for blazing-fast ad blocking
-// instead of JavaScript-based blocking. Rules compile to bytecode and
-// run inside WebKit's rendering engine — zero JS overhead.
+// MARK: - Ad Block Engine v2.1 — Hybrid 3-Layer Blocking
+// Layer 1: WKContentRuleList (native bytecode — fastest, blocks network requests)
+// Layer 2: decidePolicyFor domain blocking (fallback if WKContentRuleList fails)
+// Layer 3: JavaScript cosmetic filter (hides ad elements that slip through)
 
 class AdBlockEngine: ObservableObject {
     @Published var totalBlockedAds: Int = 0
     @Published var isEnabled: Bool = true {
         didSet {
             if isEnabled != oldValue {
-                // Re-compile rules when toggled
                 needsRecompile = true
             }
         }
@@ -21,23 +20,46 @@ class AdBlockEngine: ObservableObject {
     @Published var isCompiled: Bool = false
     @Published var filterInfo: String = "Derleniyor..."
     
-    // Compiled rule lists — cached after first compile
     private(set) var compiledRuleLists: [WKContentRuleList] = []
     var needsRecompile: Bool = true
-    
-    // Banner auto-hide timer
     private var bannerHideWorkItem: DispatchWorkItem?
     
-    // MARK: - Compile Content Rules
-    // Compiles JSON rules into native bytecode — called once, cached
+    // MARK: - Layer 2: Blocked domain Set (for decidePolicyFor fallback)
+    // Use a Set for O(1) lookup instead of array linear scan
+    static let blockedDomainSet: Set<String> = {
+        var domains = Set<String>()
+        for d in AdBlockRules.blockDomainRules {
+            domains.insert(d)
+            // Also add without www prefix
+            if d.hasPrefix("www.") {
+                domains.insert(String(d.dropFirst(4)))
+            }
+        }
+        return domains
+    }()
+    
+    /// Checks if a URL's host matches a blocked domain — O(1) lookup
+    func shouldBlockURL(_ url: URL) -> Bool {
+        guard isEnabled, let host = url.host?.lowercased() else { return false }
+        
+        // Check exact match
+        if Self.blockedDomainSet.contains(host) { return true }
+        
+        // Check suffix match (e.g., "ads.example.com" contains "example.com")
+        for domain in Self.blockedDomainSet {
+            if host.hasSuffix("." + domain) { return true }
+        }
+        
+        return false
+    }
+    
+    // MARK: - Layer 1: Compile Native Content Rules
     func compileRules(completion: @escaping () -> Void) {
         guard isEnabled else {
             compiledRuleLists = []
             isCompiled = true
             needsRecompile = false
-            DispatchQueue.main.async {
-                self.filterInfo = "Devre dışı"
-            }
+            DispatchQueue.main.async { self.filterInfo = "Devre dışı" }
             completion()
             return
         }
@@ -46,17 +68,21 @@ class AdBlockEngine: ObservableObject {
         let ruleChunks = AdBlockRules.generateChunkedRules()
         var compiled: [WKContentRuleList] = []
         let group = DispatchGroup()
+        var successCount = 0
+        var failCount = 0
         
         for (index, chunk) in ruleChunks.enumerated() {
             group.enter()
             store?.compileContentRuleList(
-                forIdentifier: "CyberBrowser_AdBlock_\(index)",
+                forIdentifier: "CyberBlock_v2_\(index)",
                 encodedContentRuleList: chunk
             ) { ruleList, error in
                 if let ruleList = ruleList {
                     compiled.append(ruleList)
+                    successCount += 1
                 } else if let error = error {
-                    print("[AdBlock] Chunk \(index) compile error: \(error.localizedDescription)")
+                    failCount += 1
+                    print("[AdBlock] ❌ Chunk \(index) FAILED: \(error.localizedDescription)")
                 }
                 group.leave()
             }
@@ -67,74 +93,189 @@ class AdBlockEngine: ObservableObject {
             self.compiledRuleLists = compiled
             self.isCompiled = true
             self.needsRecompile = false
-            let totalRules = AdBlockRules.totalRuleCount
-            self.filterInfo = "\(totalRules) kural aktif"
-            print("[AdBlock] Compiled \(compiled.count) rule lists (\(totalRules) rules)")
+            
+            let domainCount = AdBlockRules.blockDomainRules.count
+            if successCount > 0 {
+                self.filterInfo = "\(domainCount)+ domain engeli aktif"
+            } else {
+                self.filterInfo = "JS + domain engeli aktif"
+            }
+            print("[AdBlock] ✅ Compiled: \(successCount) chunks OK, \(failCount) failed, \(domainCount) domains in fallback")
             completion()
         }
     }
     
-    // MARK: - Apply Rules to WebView Configuration
+    // MARK: - Apply Rules to WebView
     func applyRules(to contentController: WKUserContentController) {
-        // Remove existing rules
         contentController.removeAllContentRuleLists()
-        
         guard isEnabled else { return }
-        
-        // Add compiled native rules
         for ruleList in compiledRuleLists {
             contentController.add(ruleList)
         }
     }
     
-    // MARK: - Supplementary YouTube Ad Skip (minimal JS)
-    // Only this small script remains — for skipping unskippable video ads
-    // that cannot be caught by URL-based blocking
-    static let youtubeAdSkipScript: String = """
+    // MARK: - Layer 3: JavaScript Cosmetic Filter + Ad Element Hider
+    static let cosmeticFilterScript: String = """
     (function() {
         'use strict';
-        if (!window.location.hostname.includes('youtube.com')) return;
         
-        let lastCheck = 0;
-        function skipAds() {
-            const now = Date.now();
-            if (now - lastCheck < 400) return;
-            lastCheck = now;
+        // ===== ELEMENT HIDING (cosmetic filter) =====
+        const adSelectors = [
+            // Generic ad containers
+            'ins.adsbygoogle', '.adsbygoogle', '[id^="google_ads"]',
+            '[id^="div-gpt-ad"]', '[class*="ad-container"]', '[class*="ad-wrapper"]',
+            '[class*="ad-banner"]', '[class*="ad_banner"]', '[class*="advertisement"]',
+            '[class*="sponsored"]', '[id*="ad-container"]', '[id*="ad_container"]',
+            '[data-ad]', '[data-ad-slot]', '[data-google-query-id]',
             
-            // Click skip button if available
+            // Specific ad networks
+            'iframe[src*="doubleclick"]', 'iframe[src*="googlesyndication"]',
+            'iframe[src*="amazon-adsystem"]', 'iframe[src*="facebook.com/plugins"]',
+            'iframe[id^="google_ads"]', 'iframe[id^="aswift"]',
+            
+            // YouTube ads
+            '.ytp-ad-module', '.ytp-ad-overlay-container', '.ytp-ad-text-overlay',
+            '.video-ads', '.ad-showing', '#masthead-ad', '#player-ads',
+            'ytd-promoted-sparkles-web-renderer', 'ytd-display-ad-renderer',
+            'ytd-companion-slot-renderer', 'ytd-action-companion-ad-renderer',
+            'ytd-promoted-video-renderer', 'ytd-ad-slot-renderer',
+            '.ytd-banner-promo-renderer', 'ytd-in-feed-ad-layout-renderer',
+            '#related ytd-promoted-sparkles-web-renderer',
+            
+            // Pop-ups and overlays
+            '[class*="popup-ad"]', '[class*="interstitial"]',
+            '[class*="modal-ad"]', '[class*="overlay-ad"]',
+            
+            // Cookie banners
+            '#onetrust-consent-sdk', '#onetrust-banner-sdk',
+            '#CybotCookiebotDialog', '#CybotCookiebotDialogOverlay',
+            '.cookie-consent', '.cookie-banner', '.cookie-notice',
+            '#cookie-notice', '#cookie-law-info-bar',
+            '.cc-banner', '.cc-window', '.js-cookie-consent',
+            '#gdpr-cookie-notice', '.cookie-popup', '#cookie-popup',
+            '[class*="cookie-consent"]', '[class*="cookie-banner"]',
+            '.consent-banner', '#consent-banner', '.gdpr-banner',
+            '#cookiescript_injected', '.cookie-overlay', '#cookie-bar',
+            
+            // Social widgets (tracking)
+            '.fb-like', '.twitter-share-button'
+        ];
+        
+        function hideAds() {
+            let count = 0;
+            const combinedSelector = adSelectors.join(',');
+            try {
+                document.querySelectorAll(combinedSelector).forEach(function(el) {
+                    if (el.offsetHeight > 0 || el.style.display !== 'none') {
+                        el.style.setProperty('display', 'none', 'important');
+                        el.style.setProperty('visibility', 'hidden', 'important');
+                        el.style.setProperty('height', '0', 'important');
+                        el.style.setProperty('overflow', 'hidden', 'important');
+                        count++;
+                    }
+                });
+            } catch(e) {}
+            
+            if (count > 0) {
+                try {
+                    window.webkit.messageHandlers.adBlocked.postMessage({
+                        count: count, total: 0, url: window.location.href
+                    });
+                } catch(e) {}
+            }
+        }
+        
+        // ===== COOKIE BANNER AUTO-DISMISS =====
+        function dismissCookies() {
+            const acceptBtns = document.querySelectorAll(
+                '[class*="cookie"] button[class*="accept"], [class*="cookie"] button[class*="agree"], ' +
+                '#onetrust-accept-btn-handler, #CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll, ' +
+                '.cc-accept, .cc-dismiss, .cc-allow, button[data-cookie-accept]'
+            );
+            acceptBtns.forEach(function(btn) { try { btn.click(); } catch(e) {} });
+            
+            document.body.style.overflow = '';
+            document.documentElement.style.overflow = '';
+        }
+        
+        // ===== YOUTUBE AD SKIP =====
+        function skipYouTubeAds() {
+            if (!window.location.hostname.includes('youtube.com')) return;
+            
             const skipBtn = document.querySelector(
-                '.ytp-ad-skip-button, .ytp-ad-skip-button-modern, .ytp-skip-ad-button'
+                '.ytp-ad-skip-button, .ytp-ad-skip-button-modern, .ytp-skip-ad-button, ' +
+                'button.ytp-ad-skip-button-modern, .ytp-ad-skip-button-slot'
             );
             if (skipBtn) {
                 skipBtn.click();
                 try { window.webkit.messageHandlers.adBlocked.postMessage({count:1,total:0,url:window.location.href}); } catch(e) {}
             }
             
-            // Speed through unskippable ads
             const video = document.querySelector('video');
-            if (video && document.querySelector('.ad-showing')) {
-                video.currentTime = video.duration || 0;
+            const adShowing = document.querySelector('.ad-showing, .ytp-ad-player-overlay');
+            if (video && adShowing) {
+                video.playbackRate = 16;
+                video.currentTime = video.duration || 999;
             }
         }
         
-        // Use requestAnimationFrame instead of setInterval for efficiency
-        function checkLoop() {
-            skipAds();
-            requestAnimationFrame(checkLoop);
+        // ===== RUN =====
+        // Initial run after page load
+        function run() {
+            hideAds();
+            dismissCookies();
+            skipYouTubeAds();
         }
-        requestAnimationFrame(checkLoop);
+        
+        // Run on DOMContentLoaded
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', function() { setTimeout(run, 300); });
+        } else {
+            setTimeout(run, 300);
+        }
+        
+        // Run again after full load
+        window.addEventListener('load', function() { setTimeout(run, 1000); });
+        
+        // Bounded MutationObserver — checks for new ads, auto-disconnects after 30 seconds
+        let observerChecks = 0;
+        const maxChecks = 50;
+        const observer = new MutationObserver(function() {
+            observerChecks++;
+            if (observerChecks <= maxChecks) {
+                setTimeout(function() { hideAds(); skipYouTubeAds(); }, 200);
+            } else {
+                observer.disconnect();
+            }
+        });
+        observer.observe(document.documentElement, { childList: true, subtree: true });
+        
+        // Force observer disconnect after 30 seconds
+        setTimeout(function() { observer.disconnect(); }, 30000);
+        
+        // Periodic check for YouTube (needs ongoing monitoring for ads)
+        if (window.location.hostname.includes('youtube.com')) {
+            let ytChecks = 0;
+            const ytInterval = setInterval(function() {
+                ytChecks++;
+                skipYouTubeAds();
+                hideAds();
+                if (ytChecks > 120) clearInterval(ytInterval); // Stop after 2 minutes
+            }, 1000);
+        }
+        
     })();
-    """
+    """;
     
-    // MARK: - Create Supplementary Scripts
+    // MARK: - Create User Scripts (Layer 3)
     func createUserScripts() -> [WKUserScript] {
         guard isEnabled else { return [] }
         
         return [
             WKUserScript(
-                source: Self.youtubeAdSkipScript,
+                source: Self.cosmeticFilterScript,
                 injectionTime: .atDocumentEnd,
-                forMainFrameOnly: true // Only main frame — not iframes
+                forMainFrameOnly: true
             )
         ]
     }
@@ -147,7 +288,6 @@ class AdBlockEngine: ObservableObject {
             self.lastBlockedDomain = domain
             self.showBanner = true
             
-            // Cancel previous timer
             self.bannerHideWorkItem?.cancel()
             let workItem = DispatchWorkItem { [weak self] in
                 withAnimation(.easeOut(duration: 0.3)) {
@@ -164,69 +304,38 @@ class AdBlockEngine: ObservableObject {
     }
 }
 
-// MARK: - Native Content Blocking Rules
-// Apple's Content Blocker JSON format — compiled to bytecode by WebKit
+// MARK: - Native Content Blocking Rules (Layer 1)
 struct AdBlockRules {
     
-    // Total rule count for UI display
-    static var totalRuleCount: Int {
-        let adguardRules = AdGuardFilterConverter.generateBuiltInFilterRules().count
-        return blockDomainRules.count + cssHideRules.count + trackingRules.count + cookieBannerRules.count + adguardRules
-    }
-    
-    // MARK: - Generate Chunked JSON Rules
-    // WKContentRuleList has a per-list limit; chunk into manageable pieces
+    // MARK: - Generate Safe JSON Rules
+    // Each rule is validated individually — bad rules are skipped
     static func generateChunkedRules() -> [String] {
-        // Combine all rules
         var allRules: [[String: Any]] = []
         
-        // 1. Domain blocking rules (ads, trackers)
-        allRules.append(contentsOf: blockDomainRules.map { domain -> [String: Any] in
-            [
-                "trigger": [
-                    "url-filter": escapeForRegex(domain),
-                    "load-type": ["third-party"]
-                ] as [String: Any],
+        // 1. Domain block rules — use safe regex
+        for domain in blockDomainRules {
+            let escaped = domain
+                .replacingOccurrences(of: ".", with: "\\\\.")
+            
+            allRules.append([
+                "trigger": ["url-filter": escaped] as [String: Any],
                 "action": ["type": "block"]
-            ]
-        })
+            ])
+        }
         
-        // 2. Full URL block rules (ad networks, tracking endpoints)
-        allRules.append(contentsOf: trackingRules.map { pattern -> [String: Any] in
-            [
-                "trigger": [
-                    "url-filter": pattern
-                ] as [String: Any],
-                "action": ["type": "block"]
-            ]
-        })
-        
-        // 3. CSS hide rules (cosmetic filtering)
-        allRules.append(contentsOf: cssHideRules.map { selector -> [String: Any] in
-            [
+        // 2. CSS hide rules  
+        for selector in cssHideSelectors {
+            allRules.append([
                 "trigger": ["url-filter": ".*"] as [String: Any],
                 "action": [
                     "type": "css-display-none",
                     "selector": selector
                 ] as [String: Any]
-            ]
-        })
+            ])
+        }
         
-        // 4. Cookie banner blocking
-        allRules.append(contentsOf: cookieBannerRules.map { selector -> [String: Any] in
-            [
-                "trigger": ["url-filter": ".*"] as [String: Any],
-                "action": [
-                    "type": "css-display-none",
-                    "selector": selector
-                ] as [String: Any]
-            ]
-        })
-        
-        // 5. AdGuard filter converter rules (Turkish + Base)
-        allRules.append(contentsOf: AdGuardFilterConverter.generateBuiltInFilterRules())
-        
-        let chunkSize = 500
+        // Chunk into smaller groups (150 rules per chunk to avoid compile failures)
+        let chunkSize = 150
         var chunks: [String] = []
         
         for i in stride(from: 0, to: allRules.count, by: chunkSize) {
@@ -242,15 +351,7 @@ struct AdBlockRules {
         return chunks
     }
     
-    // MARK: - Regex Escaper
-    private static func escapeForRegex(_ domain: String) -> String {
-        return domain
-            .replacingOccurrences(of: ".", with: "\\.")
-            .replacingOccurrences(of: "-", with: "\\-")
-    }
-    
-    // MARK: - Domain Block Rules (AdGuard Base + EasyList equivalent)
-    // 200+ ad/tracker domains — processed natively by WebKit
+    // MARK: - Blocked Domains (used by both Layer 1 and Layer 2)
     static let blockDomainRules: [String] = [
         // === Google Ads ===
         "googleads.g.doubleclick.net",
@@ -261,325 +362,141 @@ struct AdBlockRules {
         "tpc.googlesyndication.com",
         "ad.doubleclick.net",
         "stats.g.doubleclick.net",
-        "cm.g.doubleclick.net",
         "securepubads.g.doubleclick.net",
-        "ade.googlesyndication.com",
         "s0.2mdn.net",
         "pagead2.googleadservices.com",
-        "afs.googlesyndication.com",
+        
+        // === YouTube Ads ===
+        "imasdk.googleapis.com",
         
         // === Facebook / Meta ===
         "connect.facebook.net",
         "pixel.facebook.com",
         "an.facebook.com",
-        "staticxx.facebook.com",
-        "www.facebook.com/tr",
         
         // === Amazon Ads ===
         "aax-us-east.amazon-adsystem.com",
         "z-na.amazon-adsystem.com",
         "fls-na.amazon-adsystem.com",
-        "aax-us-iad.amazon-adsystem.com",
         "c.amazon-adsystem.com",
         "s.amazon-adsystem.com",
         
         // === Ad Networks ===
         "ads.pubmatic.com",
         "hbopenbid.pubmatic.com",
-        "t.pubmatic.com",
         "image6.pubmatic.com",
         "ads.yahoo.com",
-        "advertising.yahoo.com",
         "adtech.yahooinc.com",
-        "ad.turn.com",
         "cdn.taboola.com",
         "trc.taboola.com",
         "api.taboola.com",
         "nr.taboola.com",
         "cdn.outbrain.com",
-        "amplify.outbrain.com",
         "widgets.outbrain.com",
         "log.outbrain.com",
         "ads.twitter.com",
         "analytics.twitter.com",
-        "static.ads-twitter.com",
         
-        // === Tracking & Analytics ===
+        // === Tracking ===
         "www.google-analytics.com",
         "google-analytics.com",
         "ssl.google-analytics.com",
-        "analytics.google.com",
         "bat.bing.com",
-        "c.bing.com",
         "clarity.ms",
         "www.clarity.ms",
         "static.hotjar.com",
         "script.hotjar.com",
-        "vars.hotjar.com",
         "in.hotjar.com",
         "www.googletagmanager.com",
         "googletagmanager.com",
-        
-        // === Media Ads ===
-        "imasdk.googleapis.com",
-        "ad.youtube.com",
-        
-        // === Pop-up / Push Networks ===
-        "cdn.popin.cc",
-        "app.popin.cc",
-        "cdn.moengage.com",
-        "sdk.moengage.com",
-        "cdn.onesignal.com",
-        "onesignal.com",
-        "cdn.pushwoosh.com",
-        "cp.pushwoosh.com",
-        "pushnews.io",
         
         // === Ad Exchanges ===
         "ib.adnxs.com",
         "secure.adnxs.com",
         "acdn.adnxs.com",
-        "prebid.adnxs.com",
         "ads.rubiconproject.com",
         "fastlane.rubiconproject.com",
-        "pixel.rubiconproject.com",
         "ads.openx.net",
         "u.openx.net",
-        "rtb.openx.net",
         
         // === Mobile Ad Networks ===
         "ads.mopub.com",
         "app.adjust.com",
-        "s2s.adjust.com",
         "view.adjust.com",
         "app.appsflyer.com",
         "sdk.appsflyer.com",
-        "t.appsflyer.com",
-        "conversions.appsflyer.com",
         "cdn.branch.io",
-        "api.branch.io",
         
-        // === Other Trackers ===
-        "cdn.krxd.net",
-        "beacon.krxd.net",
-        "usermatch.krxd.net",
-        "cdn.segment.com",
-        "api.segment.io",
-        "cdn.mxpnl.com",
-        "decide.mixpanel.com",
-        "api-js.mixpanel.com",
-        "cr.frontend.weborama.fr",
-        "cdn.cookielaw.org",
-        "geolocation.onetrust.com",
-        "cdn.tt.omtrdc.net",
-        "dpm.demdex.net",
+        // === Push/Popup ===
+        "cdn.onesignal.com",
+        "onesignal.com",
+        "cdn.pushwoosh.com",
         
         // === Criteo ===
         "dis.eu.criteo.com",
         "static.criteo.net",
-        "sslwidget.criteo.com",
         "gum.criteo.com",
         
-        // === Misc Ad/Tracking ===
-        "adserver.adtechus.com",
-        "cdn.districtm.io",
-        "match.adsrvr.org",
-        "insight.adsrvr.org",
-        "platform.linkedin.com",
-        "snap.licdn.com",
-        "px.ads.linkedin.com",
-        "tr.snapchat.com",
-        "sc-static.net",
+        // === Other Trackers ===
+        "cdn.segment.com",
+        "api.segment.io",
+        "cdn.mxpnl.com",
+        "cdn.amplitude.com",
+        "api.amplitude.com",
+        "cdn.fullstory.com",
+        "cdn.mouseflow.com",
+        "js.hs-scripts.com",
+        "track.hubspot.com",
+        "a.scorecardresearch.com",
+        "pixel.quantserve.com",
+        "js-agent.newrelic.com",
+        "bam.nr-data.net",
+        "dpm.demdex.net",
+        "cdn.cookielaw.org",
         
-        // === AdGuard Additions ===
+        // === Yandex ===
         "mc.yandex.ru",
         "an.yandex.ru",
         "ads.yandex.ru",
-        "counter.yadro.ru",
-        "top-fwz1.mail.ru",
-        "ad.mail.ru",
-        "rs.mail.ru",
-        "r.mradx.net",
-        "ssp.rambler.ru",
-        "www.tns-counter.ru",
-        "pixel.onaudience.com",
-        "adx.adform.net",
-        "track.adform.net",
-        "serving.adform.net",
-        "banners.adform.net",
-        "a.adform.net",
-        "ad.atdmt.com",
-        "ssum.casalemedia.com",
-        "js.dmtry.com",
-        "e.serverbid.com",
-        "eus.rubiconproject.com",
-        "optimized-by.rubiconproject.com",
-        "sync.outbrain.com",
-        "tr.outbrain.com",
-        "widgets.pinterest.com",
-        "log.pinterest.com",
-        "trk.pinterest.com",
         
         // === Turkish Ad Networks ===
         "ads.sahibinden.com",
-        "i.hizliresim.com",
         "ad.mncdn.com",
         "reklam.hurriyet.com.tr",
         "ads.sozcu.com.tr",
         "reklam.mynet.com",
         "ads.milliyet.com.tr",
         
-        // === Fingerprinting / Privacy ===
-        "cdn.amplitude.com",
-        "api.amplitude.com",
-        "cdn.fullstory.com",
-        "edge.fullstory.com",
-        "cdn.mouseflow.com",
-        "o2.mouseflow.com",
-        "d.agkn.com",
-        "js.hs-scripts.com",
-        "js.hs-analytics.net",
-        "js.hsforms.net",
-        "track.hubspot.com",
-        "forms.hubspot.com",
-        "api.hubspot.com",
-        "bat.bing.com",
-        "bat.r.msn.com",
-        "a.scorecardresearch.com",
-        "sb.scorecardresearch.com",
-        "b.scorecardresearch.com",
-        "pixel.quantserve.com",
-        "secure.quantserve.com",
-        "pixel.wp.com",
-        "stats.wp.com",
-        "s.pinimg.com",
-        "ct.pinterest.com",
-        "js-agent.newrelic.com",
-        "bam.nr-data.net",
+        // === LinkedIn / Snap ===
+        "px.ads.linkedin.com",
+        "snap.licdn.com",
+        "tr.snapchat.com",
         
-        // === More Ad Networks (AdGuard Extended) ===
-        "adclick.g.doublecklick.net",
-        "www.outbrain.com",
-        "www.taboola.com",
-        "cdn.vox-cdn.com",
-        "sb.voicefive.com",
-        "cdn.permutive.com",
-        "cdn.lotame.com",
-        "bcp.crwdcntrl.net",
-        "tags.crwdcntrl.net",
-        "cdn.tynt.com",
-        "p.typekit.net",
-        "use.typekit.net",
-        "fast.wistia.com",
-        "pippio.com",
-        "scdn.cxense.com",
-        "cdn.cxense.com",
-        "api.cxense.com",
+        // === Misc ===
+        "match.adsrvr.org",
+        "insight.adsrvr.org",
+        "adserver.adtechus.com",
         "id5-sync.com",
-        "lcdn.livingads.io",
         "cdn.sharethrough.com",
-        "bttrack.com",
-        "trk.helios-cloud.com"
+        "scdn.cxense.com"
     ]
     
-    // MARK: - CSS Hide Rules (Cosmetic Filtering)
-    // Equivalent to AdGuard's ## (element hiding) rules
-    static let cssHideRules: [String] = [
-        // Generic ad containers
-        "[id*=\"ad-container\"]",
-        "[id*=\"ad_container\"]",
-        "[class*=\"ad-container\"]",
-        "[class*=\"ad_container\"]",
-        "[class*=\"ad-wrapper\"]",
-        "[class*=\"ad_wrapper\"]",
-        "[class*=\"ad-slot\"]",
-        "[class*=\"ad-banner\"]",
-        "[class*=\"ad_banner\"]",
-        "[class*=\"advertisement\"]",
-        "[class*=\"sponsored-content\"]",
-        
-        // Google Ads
+    // MARK: - CSS Hide Selectors (for native css-display-none)
+    static let cssHideSelectors: [String] = [
         "ins.adsbygoogle",
         ".adsbygoogle",
-        
-        // Video ads
+        "[id^=\"google_ads\"]",
+        "[id^=\"div-gpt-ad\"]",
+        "[data-ad-slot]",
+        "[data-google-query-id]",
         ".ytp-ad-module",
         ".ytp-ad-overlay-container",
-        ".ytp-ad-text-overlay",
         ".video-ads",
-        ".ad-showing",
-        ".ytp-ad-image-overlay",
         "#masthead-ad",
         "#player-ads",
         "ytd-promoted-sparkles-web-renderer",
         "ytd-display-ad-renderer",
-        "ytd-companion-slot-renderer",
-        "ytd-action-companion-ad-renderer",
-        "ytd-promoted-video-renderer",
         "ytd-ad-slot-renderer",
-        ".ytd-banner-promo-renderer",
-        
-        // Popup overlays
-        "[class*=\"popup-ad\"]",
-        "[class*=\"interstitial\"]",
-        "[class*=\"modal-ad\"]",
-        "[class*=\"overlay-ad\"]",
-        
-        // Social tracking widgets
-        ".fb-like",
-        ".twitter-share-button",
-        "[class*=\"social-share\"]"
-    ]
-    
-    // MARK: - URL Pattern Tracking Rules
-    // Regex patterns for tracking endpoints
-    static let trackingRules: [String] = [
-        ".*\\.doubleclick\\.net",
-        ".*googlesyndication\\.com",
-        ".*google-analytics\\.com.*collect",
-        ".*googletagmanager\\.com/gtm",
-        ".*facebook\\.com/tr",
-        ".*facebook\\.net/en_US/fbevents",
-        ".*hotjar\\.com.*hotjar",
-        ".*clarity\\.ms.*collect",
-        ".*amazon-adsystem\\.com.*ad",
-        ".*taboola\\.com.*loaders",
-        ".*outbrain\\.com.*widget"
-    ]
-    
-    // MARK: - Cookie Banner CSS Rules
-    static let cookieBannerRules: [String] = [
-        "#onetrust-consent-sdk",
-        "#onetrust-banner-sdk",
-        "#CybotCookiebotDialog",
-        "#CybotCookiebotDialogOverlay",
-        ".cookie-consent",
-        ".cookie-banner",
-        ".cookie-notice",
-        "#cookie-notice",
-        "#cookie-law-info-bar",
-        ".cc-banner",
-        ".cc-window",
-        ".js-cookie-consent",
-        "#gdpr-cookie-notice",
-        ".cookie-popup",
-        "#cookie-popup",
-        ".cookie-modal",
-        "[class*=\"cookie-consent\"]",
-        "[class*=\"cookie-banner\"]",
-        "[id*=\"cookie-consent\"]",
-        "[id*=\"cookie-banner\"]",
-        ".consent-banner",
-        "#consent-banner",
-        ".gdpr-banner",
-        "#gdpr-banner",
-        ".privacy-banner",
-        "#privacy-notice",
-        ".cookie-overlay",
-        ".consent-overlay",
-        ".gdpr-overlay",
-        "#cookiescript_injected",
-        ".cookieinfo",
-        "#cookie-bar"
+        "ytd-in-feed-ad-layout-renderer"
     ]
 }
