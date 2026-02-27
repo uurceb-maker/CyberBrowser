@@ -77,20 +77,20 @@ struct AddressBar: View {
             }
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 10)
+        .padding(.vertical, 9)
         .background(
             RoundedRectangle(cornerRadius: CyberTheme.smallCornerRadius)
-                .fill(Color.cyberSurface)
+                .fill(Color(red: 0.08, green: 0.08, blue: 0.09))
                 .overlay(
                     RoundedRectangle(cornerRadius: CyberTheme.smallCornerRadius)
                         .stroke(
-                            isFocused ? Color.cyberYellow : Color.cyberYellow.opacity(0.3),
-                            lineWidth: isFocused ? 1.5 : 0.5
+                            isFocused ? Color.white.opacity(0.25) : Color.white.opacity(0.08),
+                            lineWidth: 1
                         )
                 )
         )
         .padding(.horizontal, CyberTheme.padding)
-        .padding(.vertical, 6)
+        .padding(.vertical, 8)
         .onChange(of: isFocused) { _, focused in
             if !focused {
                 isEditing = false

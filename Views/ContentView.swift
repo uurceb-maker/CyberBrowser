@@ -10,7 +10,6 @@ struct ContentView: View {
     
     @State private var showMenu: Bool = false
     @State private var showTabManager: Bool = false
-    @State private var showShareSheet: Bool = false
     @State private var displayURL: String = "https://www.google.com"
     @State private var isInitialized: Bool = false
     
@@ -19,9 +18,6 @@ struct ContentView: View {
             Color.cyberBlack.ignoresSafeArea()
             
             VStack(spacing: 0) {
-                AdBlockBanner()
-                    .zIndex(1)
-                
                 AddressBar(
                     urlString: $displayURL,
                     isSecure: $webViewStore.isSecure,
@@ -30,8 +26,6 @@ struct ContentView: View {
                         webViewStore.loadURLString(input)
                     }
                 )
-                
-                quickAccessBar
                 
                 if webViewStore.isLoading {
                     ProgressView()
@@ -122,75 +116,7 @@ struct ContentView: View {
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.hidden)
         }
-        .sheet(isPresented: $showShareSheet) {
-            if let current = URL(string: webViewStore.currentURLString) {
-                ActivityView(items: [current])
-            } else {
-                ActivityView(items: [webViewStore.currentURLString])
-            }
-        }
     }
-    
-    private var quickAccessBar: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                QuickActionChip(title: "Google", icon: "magnifyingglass") {
-                    webViewStore.loadURLString("https://www.google.com")
-                }
-                QuickActionChip(title: "YouTube", icon: "play.rectangle.fill") {
-                    webViewStore.loadURLString("https://www.youtube.com")
-                }
-                QuickActionChip(title: "X", icon: "bubble.left.and.bubble.right.fill") {
-                    webViewStore.loadURLString("https://x.com")
-                }
-                QuickActionChip(title: "Dizipal", icon: "tv.fill") {
-                    webViewStore.loadURLString("https://dizipal1541.com/")
-                }
-                QuickActionChip(title: "Paylas", icon: "square.and.arrow.up.fill") {
-                    showShareSheet = true
-                }
-            }
-            .padding(.horizontal, CyberTheme.padding)
-            .padding(.bottom, 6)
-        }
-    }
-}
-
-struct QuickActionChip: View {
-    let title: String
-    let icon: String
-    let action: () -> Void
-    
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 6) {
-                Image(systemName: icon)
-                    .font(.system(size: 12, weight: .semibold))
-                Text(title)
-                    .font(.system(size: 12, weight: .semibold))
-            }
-            .foregroundColor(.cyberWhite)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(Color.cyberSurface)
-            .overlay(
-                Capsule()
-                    .stroke(Color.cyberYellow.opacity(0.25), lineWidth: 0.8)
-            )
-            .clipShape(Capsule())
-        }
-        .buttonStyle(CyberButtonStyle())
-    }
-}
-
-struct ActivityView: UIViewControllerRepresentable {
-    let items: [Any]
-    
-    func makeUIViewController(context: Context) -> UIActivityViewController {
-        UIActivityViewController(activityItems: items, applicationActivities: nil)
-    }
-    
-    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }
 
 // MARK: - Preview

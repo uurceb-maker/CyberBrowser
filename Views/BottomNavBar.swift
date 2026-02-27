@@ -17,7 +17,6 @@ struct BottomNavBar: View {
     
     var body: some View {
         HStack {
-            // Back Button
             NavButton(
                 icon: "chevron.left",
                 isEnabled: canGoBack,
@@ -52,42 +51,28 @@ struct BottomNavBar: View {
             Spacer()
             
             Button(action: onAddressFocus) {
-                ZStack {
-                    Circle()
-                        .fill(Color.cyberYellow.opacity(0.2))
-                        .frame(width: 52, height: 52)
-                        .blur(radius: 8)
-                    
-                    Circle()
-                        .fill(Color.cyberYellow)
-                        .frame(width: 44, height: 44)
-                        .shadow(color: .cyberYellow.opacity(0.5), radius: 10, x: 0, y: 0)
-                    
-                    Image(systemName: "magnifyingglass")
-                        .font(.system(size: 20, weight: .bold))
-                        .foregroundColor(.black)
-                }
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundColor(.cyberWhite)
             }
             .buttonStyle(CyberButtonStyle())
             
             Spacer()
             
-            // Tabs Button
             Button(action: onTabs) {
                 ZStack {
                     Image(systemName: "square.on.square")
-                        .font(.system(size: CyberTheme.iconSize, weight: .medium))
+                        .font(.system(size: 20, weight: .medium))
                         .foregroundColor(.cyberWhite)
                     
-                    // Tab count badge
                     if tabCount > 1 {
                         Text("\(tabCount)")
                             .font(.system(size: 9, weight: .bold, design: .monospaced))
-                            .foregroundColor(.black)
-                            .padding(3)
-                            .background(Color.cyberYellow)
+                            .foregroundColor(.cyberWhite)
+                            .padding(2)
+                            .background(Color.cyberSurface)
                             .clipShape(Circle())
-                            .offset(x: 10, y: -10)
+                            .offset(x: 9, y: -8)
                     }
                 }
             }
@@ -95,26 +80,17 @@ struct BottomNavBar: View {
             
             Spacer()
             
-            // Menu Button
             NavButton(
                 icon: "line.3.horizontal",
                 isEnabled: true,
                 action: onMenu
             )
         }
-        .padding(.horizontal, 24)
-        .padding(.vertical, 10)
-        .padding(.bottom, 8)
+        .padding(.horizontal, 18)
+        .padding(.vertical, 8)
+        .padding(.bottom, 6)
         .background(
-            Rectangle()
-                .fill(Color.cyberBlack)
-                .shadow(color: .cyberYellow.opacity(0.1), radius: 10, y: -5)
-                .overlay(
-                    Rectangle()
-                        .frame(height: 0.5)
-                        .foregroundColor(Color.cyberYellow.opacity(0.2)),
-                    alignment: .top
-                )
+            Color.cyberBlack.opacity(0.92)
         )
     }
 }
@@ -128,7 +104,7 @@ struct NavButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: icon)
-                .font(.system(size: CyberTheme.iconSize, weight: .medium))
+                .font(.system(size: 20, weight: .medium))
                 .foregroundColor(isEnabled ? .cyberWhite : .cyberMuted)
         }
         .disabled(!isEnabled)

@@ -72,7 +72,8 @@ class AdBlockEngine: ObservableObject {
         "tradedoubler.com", "awin1.com", "impact.com"
     ]
     private let blockedPathKeywords: Set<String> = [
-        "/ads", "/ad-", "/ad_", "/adserver", "/doubleclick", "/googlesyndication", "/pagead"
+        "/ads", "/ad-", "/ad_", "/adserver", "/doubleclick", "/googlesyndication", "/pagead",
+        "/reklam", "/sponsor", "/promo", "/banner", "/bonus", "/casino", "/bahis", "/bet"
     ]
     
     // MARK: - EasyList Download Config
@@ -144,6 +145,18 @@ class AdBlockEngine: ObservableObject {
                 print("[AdBlock] ✅ CSS rules compiled")
             } else {
                 print("[AdBlock] ❌ CSS rules failed: \(error?.localizedDescription ?? "unknown")")
+            }
+            group.leave()
+        }
+        
+        // Compile first-party path rules
+        group.enter()
+        store?.compileContentRuleList(forIdentifier: "embedded_first_party", encodedContentRuleList: Self.firstPartyPathRules) { ruleList, error in
+            if let ruleList = ruleList {
+                compiled.append(ruleList)
+                print("[AdBlock] First-party rules compiled")
+            } else {
+                print("[AdBlock] First-party rules failed: \(error?.localizedDescription ?? "unknown")")
             }
             group.leave()
         }
@@ -513,6 +526,14 @@ class AdBlockEngine: ObservableObject {
     ]
     """
     
+    static let firstPartyPathRules: String = """
+    [
+        {"trigger":{"url-filter":"[\\\\/\\\\-_](ad|ads|advert|reklam|sponsor|sponsored|promo|promotion)[\\\\/\\\\-_]","resource-type":["image","script","style-sheet","raw","media","svg-document","popup"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":"(banner|prebid|vast|preroll|midroll|instream|outstream|doubleclick|pagead|googlesyndication|adservice)","resource-type":["image","script","raw","media","popup"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":"(casino|bahis|bet|bonus)","resource-type":["image","script","raw","media","popup"]},"action":{"type":"block"}}
+    ]
+    """
+    
     // MARK: - Layer 3: Cosmetic Filter Script (JS)
     static let cosmeticFilterScript: String = """
     (function() {
@@ -535,10 +556,60 @@ class AdBlockEngine: ObservableObject {
             '[id*="cookie-popup"]', '[class*="gdpr"]',
             '[id*="consent-banner"]', '[class*="consent-banner"]',
             '.ad-overlay', '#ad-overlay', '[class*="interstitial"]',
-            '[id*="ad-popup"]', '[class*="ad-popup"]'
+            '[id*="ad-popup"]', '[class*="ad-popup"]',
+            '[id*="reklam"]', '[class*="reklam"]',
+            '[id*="sponsor"]', '[class*="sponsor"]'
+        ];
+        
+        const adKeywords = [
+            'ad', 'ads', 'advert', 'reklam', 'sponsor', 'promo',
+            'casino', 'bahis', 'bet', 'bonus', 'preroll', 'midroll'
         ];
         
         let totalHidden = 0;
+        
+        function textContainsKeyword(text) {
+            if (!text) return false;
+            const value = String(text).toLowerCase();
+            for (const k of adKeywords) {
+                if (value.includes(k)) return true;
+            }
+            return false;
+        }
+        
+        function hideContainer(el) {
+            if (!el) return 0;
+            const container = el.closest('section, article, div, aside, li') || el;
+            if (container && container.style.display !== 'none') {
+                container.style.setProperty('display', 'none', 'important');
+                container.style.setProperty('visibility', 'hidden', 'important');
+                container.style.setProperty('height', '0', 'important');
+                container.style.setProperty('overflow', 'hidden', 'important');
+                return 1;
+            }
+            return 0;
+        }
+        
+        function hideLikelyAdBlocks() {
+            let removed = 0;
+            const candidates = document.querySelectorAll('a, iframe, img, video, div, section');
+            candidates.forEach(function(el) {
+                const joined = [
+                    el.id,
+                    el.className,
+                    el.getAttribute && el.getAttribute('src'),
+                    el.getAttribute && el.getAttribute('href'),
+                    el.getAttribute && el.getAttribute('title'),
+                    el.getAttribute && el.getAttribute('aria-label'),
+                    el.textContent
+                ].join(' ');
+                
+                if (textContainsKeyword(joined)) {
+                    removed += hideContainer(el);
+                }
+            });
+            return removed;
+        }
         
         function hideElements() {
             let count = 0;
@@ -554,6 +625,8 @@ class AdBlockEngine: ObservableObject {
                     }
                 });
             } catch(e) {}
+            
+            count += hideLikelyAdBlocks();
             
             if (count > 0) {
                 totalHidden += count;
