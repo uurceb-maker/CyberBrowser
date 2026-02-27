@@ -6,26 +6,22 @@ struct ContentView: View {
     @EnvironmentObject var adBlockEngine: AdBlockEngine
     @EnvironmentObject var extensionManager: ExtensionManager
     
-    // WebView store — manages the WKWebView lifecycle
     @StateObject private var webViewStore = WebViewStore()
     
-    // UI state
     @State private var showMenu: Bool = false
     @State private var showTabManager: Bool = false
+    @State private var showShareSheet: Bool = false
     @State private var displayURL: String = "https://www.google.com"
     @State private var isInitialized: Bool = false
     
     var body: some View {
         ZStack {
-            // Full black background
             Color.cyberBlack.ignoresSafeArea()
             
             VStack(spacing: 0) {
-                // MARK: - Ad Block Banner (Top)
                 AdBlockBanner()
                     .zIndex(1)
                 
-                // MARK: - Address Bar
                 AddressBar(
                     urlString: $displayURL,
                     isSecure: $webViewStore.isSecure,
@@ -35,51 +31,33 @@ struct ContentView: View {
                     }
                 )
                 
-                // Loading progress bar
+                quickAccessBar
+                
                 if webViewStore.isLoading {
-                    GeometryReader { geometry in
-                        Rectangle()
-                            .fill(
-                                LinearGradient(
-                                    colors: [
-                                        Color.cyberYellow.opacity(0.3),
-                                        Color.cyberYellow,
-                                        Color.cyberYellow.opacity(0.3)
-                                    ],
-                                    startPoint: .leading,
-                                    endPoint: .trailing
-                                )
-                            )
-                            .frame(height: 2)
-                            .frame(width: geometry.size.width * 0.6)
-                            .offset(x: webViewStore.isLoading ? geometry.size.width * 0.4 : -geometry.size.width * 0.6)
-                            .animation(
-                                .linear(duration: 1.5).repeatForever(autoreverses: false),
-                                value: webViewStore.isLoading
-                            )
-                    }
-                    .frame(height: 2)
+                    ProgressView(value: nil)
+                        .progressViewStyle(.linear)
+                        .tint(.cyberYellow)
+                        .frame(height: 2)
+                        .padding(.horizontal, CyberTheme.padding)
                 }
                 
-                // MARK: - Web View
                 WebViewContainer(store: webViewStore)
                 
-                // MARK: - Bottom Navigation Bar
                 BottomNavBar(
                     canGoBack: webViewStore.canGoBack,
                     canGoForward: webViewStore.canGoForward,
+                    isLoading: webViewStore.isLoading,
                     tabCount: tabManager.tabs.count,
-                    onBack: {
-                        webViewStore.goBack()
+                    onBack: { webViewStore.goBack() },
+                    onForward: { webViewStore.goForward() },
+                    onHome: { webViewStore.goHome() },
+                    onReloadOrStop: {
+                        webViewStore.isLoading ? webViewStore.stopLoading() : webViewStore.reload()
                     },
-                    onForward: {
-                        webViewStore.goForward()
-                    },
-                    onSearch: {
-                        // Focus address bar — noop for now, user can tap it
+                    onAddressFocus: {
+                        NotificationCenter.default.post(name: .focusAddressBar, object: nil)
                     },
                     onTabs: {
-                        // Save current tab state before showing tab manager
                         if let url = webViewStore.webView.url {
                             tabManager.updateActiveTab(
                                 title: webViewStore.pageTitle,
@@ -89,9 +67,7 @@ struct ContentView: View {
                         }
                         showTabManager = true
                     },
-                    onMenu: {
-                        showMenu = true
-                    }
+                    onMenu: { showMenu = true }
                 )
             }
         }
@@ -100,32 +76,24 @@ struct ContentView: View {
             guard !isInitialized else { return }
             isInitialized = true
             
-            // Connect stores
             webViewStore.adBlockEngine = adBlockEngine
             webViewStore.tabManager = tabManager
             webViewStore.extensionManager = extensionManager
             
-            // Compile native ad-block rules, then load page
             webViewStore.compileAdBlockRules {
-                // Inject extension scripts after rules are compiled
                 webViewStore.injectScripts()
-                
-                // Load initial URL
-                let initialURL = tabManager.activeTab.url
-                webViewStore.loadURL(initialURL)
+                webViewStore.loadURL(tabManager.activeTab.url)
             }
         }
         .onChange(of: webViewStore.currentURLString) { newURL in
             displayURL = newURL
         }
         .onChange(of: tabManager.activeTabIndex) { _ in
-            // When tab changes, load the new tab's URL
             let tab = tabManager.activeTab
             webViewStore.loadURL(tab.url)
             displayURL = tab.url.absoluteString
         }
         .onChange(of: adBlockEngine.isEnabled) { _ in
-            // Recompile and re-inject when ad blocking is toggled
             if adBlockEngine.needsRecompile {
                 webViewStore.compileAdBlockRules {
                     webViewStore.injectScripts()
@@ -154,7 +122,75 @@ struct ContentView: View {
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.hidden)
         }
+        .sheet(isPresented: $showShareSheet) {
+            if let current = URL(string: webViewStore.currentURLString) {
+                ActivityView(items: [current])
+            } else {
+                ActivityView(items: [webViewStore.currentURLString])
+            }
+        }
     }
+    
+    private var quickAccessBar: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                QuickActionChip(title: "Google", icon: "magnifyingglass") {
+                    webViewStore.loadURLString("https://www.google.com")
+                }
+                QuickActionChip(title: "YouTube", icon: "play.rectangle.fill") {
+                    webViewStore.loadURLString("https://www.youtube.com")
+                }
+                QuickActionChip(title: "X", icon: "bubble.left.and.bubble.right.fill") {
+                    webViewStore.loadURLString("https://x.com")
+                }
+                QuickActionChip(title: "Dizipal", icon: "tv.fill") {
+                    webViewStore.loadURLString("https://dizipal1541.com/")
+                }
+                QuickActionChip(title: "Paylas", icon: "square.and.arrow.up.fill") {
+                    showShareSheet = true
+                }
+            }
+            .padding(.horizontal, CyberTheme.padding)
+            .padding(.bottom, 6)
+        }
+    }
+}
+
+struct QuickActionChip: View {
+    let title: String
+    let icon: String
+    let action: () -> Void
+    
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Image(systemName: icon)
+                    .font(.system(size: 12, weight: .semibold))
+                Text(title)
+                    .font(.system(size: 12, weight: .semibold))
+            }
+            .foregroundColor(.cyberWhite)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(Color.cyberSurface)
+            .overlay(
+                Capsule()
+                    .stroke(Color.cyberYellow.opacity(0.25), lineWidth: 0.8)
+            )
+            .clipShape(Capsule())
+        }
+        .buttonStyle(CyberButtonStyle())
+    }
+}
+
+struct ActivityView: UIViewControllerRepresentable {
+    let items: [Any]
+    
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: items, applicationActivities: nil)
+    }
+    
+    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }
 
 // MARK: - Preview

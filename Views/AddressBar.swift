@@ -56,11 +56,7 @@ struct AddressBar: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
                     .onTapGesture {
-                        editText = urlString
-                        isEditing = true
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                            isFocused = true
-                        }
+                        focusAddressBar()
                     }
             }
             
@@ -100,5 +96,28 @@ struct AddressBar: View {
                 isEditing = false
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .focusAddressBar)) { _ in
+            focusAddressBar()
+        }
+        .onAppear {
+            editText = urlString
+        }
+        .onChange(of: urlString) { newValue in
+            if !isEditing {
+                editText = newValue
+            }
+        }
     }
+    
+    private func focusAddressBar() {
+        editText = urlString
+        isEditing = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            isFocused = true
+        }
+    }
+}
+
+extension Notification.Name {
+    static let focusAddressBar = Notification.Name("focusAddressBar")
 }

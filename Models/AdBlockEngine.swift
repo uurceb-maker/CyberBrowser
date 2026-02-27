@@ -31,29 +31,59 @@ class AdBlockEngine: ObservableObject {
     
     // MARK: - Layer 2: Domain keywords for decidePolicyFor
     private let blockedDomainKeywords: Set<String> = [
+        // Google Ad Network
         "doubleclick.net", "googlesyndication.com", "googleadservices.com",
         "google-analytics.com", "googletagmanager.com", "googletagservices.com",
+        "pagead2.googlesyndication.com", "securepubads.g.doubleclick.net",
+        "tpc.googlesyndication.com", "s0.2mdn.net", "2mdn.net",
+        // Major Ad Exchanges
         "adnxs.com", "adsrvr.org", "advertising.com", "adform.net",
         "taboola.com", "outbrain.com", "criteo.com", "criteo.net",
         "moatads.com", "amazon-adsystem.com", "rubiconproject.com",
         "pubmatic.com", "openx.net", "casalemedia.com", "bidswitch.net",
-        "smartadserver.com", "adcolony.com", "applovin.com", "vungle.com",
-        "admob.com", "chartboost.com", "inmobi.com", "smaato.net",
-        "2mdn.net", "nr-data.net", "yieldmanager.com",
-        "pagead2.googlesyndication.com", "securepubads.g.doubleclick.net",
-        "tpc.googlesyndication.com", "s0.2mdn.net",
+        "smartadserver.com", "yieldmanager.com",
         "cdn.taboola.com", "trc.taboola.com",
         "widgets.outbrain.com", "log.outbrain.com",
+        // Mobile Ad SDKs
+        "adcolony.com", "applovin.com", "vungle.com",
+        "admob.com", "chartboost.com", "inmobi.com", "smaato.net",
+        "unityads.unity3d.com", "mopub.com", "ironsrc.com",
+        // Social Media Trackers
         "static.ads-twitter.com", "analytics.twitter.com",
-        "pixel.facebook.com", "an.facebook.com",
-        "ads.yahoo.com", "gemini.yahoo.com"
+        "pixel.facebook.com", "an.facebook.com", "connect.facebook.net",
+        "ads.yahoo.com", "gemini.yahoo.com",
+        "ads.linkedin.com", "snap.licdn.com",
+        // Analytics & Tracking
+        "nr-data.net", "hotjar.com", "mouseflow.com", "fullstory.com",
+        "mixpanel.com", "segment.com", "amplitude.com",
+        "omtrdc.net", "demdex.net", "everesttech.net",
+        "quantserve.com", "scorecardresearch.com", "bluekai.com",
+        // Popup / Redirect Networks
+        "exoclick.com", "popads.net", "propellerads.com",
+        "trafficjunky.com", "revcontent.com", "mgid.com",
+        "zedo.com", "adtechus.com", "spotxchange.com",
+        "sharethrough.com", "contextweb.com", "lijit.com",
+        "adblade.com", "medianet.com", "serving-sys.com",
+        // Fingerprinting & Surveillance
+        "fingerprintjs.com", "cdn.cookielaw.org",
+        "trustarc.com", "onetrust.com",
+        // Additional Networks
+        "adhigh.net", "adroll.com",
+        "tradedoubler.com", "awin1.com", "impact.com"
+    ]
+    private let blockedPathKeywords: Set<String> = [
+        "/ads", "/ad-", "/ad_", "/adserver", "/doubleclick", "/googlesyndication", "/pagead"
     ]
     
     // MARK: - EasyList Download Config
-    private let easyListURL = "https://easylist-downloads.adblockplus.org/easylist_content_blocker.json"
+    private let easyListURLs: [String] = [
+        "https://easylist-downloads.adblockplus.org/easylist_content_blocker.json",
+        "https://raw.githubusercontent.com/niceincode/niceincode.github.io/master/nicelist/nicelist.json"
+    ]
     private let cacheFileName = "easylist_content_blocker.json"
     private let cacheMaxAgeDays: Double = 7
     private let maxRulesPerChunk = 50000
+    private let maxRetryAttempts = 3
     
     // MARK: - init
     init() {
@@ -129,7 +159,7 @@ class AdBlockEngine: ObservableObject {
         }
     }
     
-    // MARK: - Download EasyList (background enhancement)
+    // MARK: - Download EasyList (background enhancement with retry + fallback)
     private func downloadAndCompileEasyList() {
         // Check cache first
         if let cacheURL = getCacheFileURL(),
@@ -147,37 +177,98 @@ class AdBlockEngine: ObservableObject {
             }
         }
         
-        // Download
-        guard let url = URL(string: easyListURL) else { return }
-        print("[AdBlock] ⬇️ Downloading EasyList...")
+        // Try each URL with retry
+        tryDownloadEasyList(urlIndex: 0, attempt: 0)
+    }
+    
+    private func tryDownloadEasyList(urlIndex: Int, attempt: Int) {
+        guard urlIndex < easyListURLs.count else {
+            print("[AdBlock] ⚠️ All EasyList sources failed — embedded rules are sufficient")
+            return
+        }
         
-        URLSession.shared.dataTask(with: url) { [weak self] data, _, error in
-            guard let self = self, let data = data, error == nil,
-                  let json = String(data: data, encoding: .utf8) else {
-                print("[AdBlock] ⚠️ Download failed — embedded rules are sufficient")
+        guard let url = URL(string: easyListURLs[urlIndex]) else {
+            tryDownloadEasyList(urlIndex: urlIndex + 1, attempt: 0)
+            return
+        }
+        
+        print("[AdBlock] ⬇️ Downloading EasyList (source \(urlIndex + 1)/\(easyListURLs.count), attempt \(attempt + 1))...")
+        
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 30
+        config.timeoutIntervalForResource = 60
+        let session = URLSession(configuration: config)
+        
+        session.dataTask(with: url) { [weak self] data, response, error in
+            guard let self = self else { return }
+            
+            // Check for valid response
+            if let data = data, error == nil,
+               let httpResponse = response as? HTTPURLResponse,
+               httpResponse.statusCode == 200,
+               let json = String(data: data, encoding: .utf8),
+               json.contains("trigger") || json.contains("url-filter") {
+                
+                // Cache successfully
+                if let cacheURL = self.getCacheFileURL() {
+                    try? data.write(to: cacheURL)
+                    print("[AdBlock] 💾 Cached EasyList (\(data.count / 1024)KB)")
+                }
+                
+                self.compileDownloadedRules(json)
                 return
             }
             
-            // Cache
-            if let cacheURL = self.getCacheFileURL() {
-                try? data.write(to: cacheURL)
-                print("[AdBlock] 💾 Cached EasyList (\(data.count / 1024)KB)")
+            // Retry with exponential backoff
+            let nextAttempt = attempt + 1
+            if nextAttempt < self.maxRetryAttempts {
+                let delay = Double(nextAttempt) * 2.0
+                print("[AdBlock] 🔄 Retry in \(delay)s...")
+                DispatchQueue.global().asyncAfter(deadline: .now() + delay) {
+                    self.tryDownloadEasyList(urlIndex: urlIndex, attempt: nextAttempt)
+                }
+            } else {
+                // Try next URL source
+                print("[AdBlock] ❌ Source \(urlIndex + 1) failed, trying next...")
+                self.tryDownloadEasyList(urlIndex: urlIndex + 1, attempt: 0)
             }
-            
-            self.compileDownloadedRules(json)
         }.resume()
     }
     
     // MARK: - Compile Downloaded Rules
     private func compileDownloadedRules(_ jsonString: String) {
-        guard let data = jsonString.data(using: .utf8),
-              let allRules = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+        let trimmed = jsonString.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix("[") else {
+            print("[AdBlock] ⚠️ Downloaded list is not JSON rule format, skipped")
             return
         }
         
-        let totalRules = allRules.count
+        guard let data = jsonString.data(using: .utf8),
+              let allRules = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+            print("[AdBlock] ⚠️ Downloaded JSON parse failed")
+            return
+        }
+        
+        let validRules = allRules.filter { rule in
+            guard
+                let trigger = rule["trigger"] as? [String: Any],
+                let action = rule["action"] as? [String: Any],
+                trigger["url-filter"] != nil,
+                action["type"] != nil
+            else {
+                return false
+            }
+            return true
+        }
+        
+        guard !validRules.isEmpty else {
+            print("[AdBlock] ⚠️ Downloaded list has no valid rules")
+            return
+        }
+        
+        let totalRules = validRules.count
         let chunks = stride(from: 0, to: totalRules, by: maxRulesPerChunk).map { start in
-            Array(allRules[start..<min(start + maxRulesPerChunk, totalRules)])
+            Array(validRules[start..<min(start + maxRulesPerChunk, totalRules)])
         }
         
         let store = WKContentRuleListStore.default()
@@ -229,6 +320,14 @@ class AdBlockEngine: ObservableObject {
         
         print("[AdBlock] 📎 Applied \(compiledRuleLists.count) rule list(s)")
         
+        // Anti-anti-adblock (runs FIRST at document start to intercept detection)
+        let antiDetectScript = WKUserScript(
+            source: Self.antiAdBlockScript,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: false
+        )
+        controller.addUserScript(antiDetectScript)
+        
         // Layer 3: JS Cosmetic Filter (runs in ALL frames)
         let cosmeticScript = WKUserScript(
             source: Self.cosmeticFilterScript,
@@ -236,6 +335,14 @@ class AdBlockEngine: ObservableObject {
             forMainFrameOnly: false
         )
         controller.addUserScript(cosmeticScript)
+        
+        // Cookie consent auto-dismiss
+        let cookieScript = WKUserScript(
+            source: Self.cookieConsentScript,
+            injectionTime: .atDocumentEnd,
+            forMainFrameOnly: true
+        )
+        controller.addUserScript(cookieScript)
         
         // YouTube ad skip (main frame only)
         let ytScript = WKUserScript(
@@ -252,7 +359,14 @@ class AdBlockEngine: ObservableObject {
         guard let host = url.host?.lowercased() else { return false }
         
         for keyword in blockedDomainKeywords {
-            if host.contains(keyword) {
+            if host == keyword || host.hasSuffix(".\(keyword)") {
+                return true
+            }
+        }
+        
+        let path = url.path.lowercased()
+        for keyword in blockedPathKeywords {
+            if path.contains(keyword) {
                 return true
             }
         }
@@ -278,81 +392,86 @@ class AdBlockEngine: ObservableObject {
     }
     
     // MARK: - Layer 1a: Network Blocking Rules (Embedded — guaranteed to compile)
-    // These are REAL Safari Content Blocker JSON rules copied from EasyList format
-    // They use url-filter patterns that are 100% valid ICU regex
+    // Simplified ICU regex with resource-type filtering for reliable compilation
     static let networkBlockRules: String = """
     [
-        {"trigger":{"url-filter":"^https?://([^/]+\\\\.)?doubleclick\\\\.net[/:]","load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"^https?://([^/]+\\\\.)?googlesyndication\\\\.com[/:]","load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"^https?://([^/]+\\\\.)?googleadservices\\\\.com[/:]","load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"^https?://([^/]+\\\\.)?google-analytics\\\\.com[/:]","load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"^https?://([^/]+\\\\.)?googletagmanager\\\\.com[/:]","load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"^https?://([^/]+\\\\.)?googletagservices\\\\.com[/:]","load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"^https?://([^/]+\\\\.)?adnxs\\\\.com[/:]","load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"^https?://([^/]+\\\\.)?adsrvr\\\\.org[/:]","load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"^https?://([^/]+\\\\.)?advertising\\\\.com[/:]","load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"^https?://([^/]+\\\\.)?adform\\\\.net[/:]","load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"^https?://([^/]+\\\\.)?taboola\\\\.com[/:]","load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"^https?://([^/]+\\\\.)?outbrain\\\\.com[/:]","load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"^https?://([^/]+\\\\.)?criteo\\\\.(com|net)[/:]","load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"^https?://([^/]+\\\\.)?moatads\\\\.com[/:]","load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"^https?://([^/]+\\\\.)?amazon-adsystem\\\\.com[/:]","load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"^https?://([^/]+\\\\.)?rubiconproject\\\\.com[/:]","load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"^https?://([^/]+\\\\.)?pubmatic\\\\.com[/:]","load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"^https?://([^/]+\\\\.)?openx\\\\.net[/:]","load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"^https?://([^/]+\\\\.)?casalemedia\\\\.com[/:]","load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"^https?://([^/]+\\\\.)?bidswitch\\\\.net[/:]","load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"^https?://([^/]+\\\\.)?smartadserver\\\\.com[/:]","load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"^https?://([^/]+\\\\.)?adcolony\\\\.com[/:]","load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"^https?://([^/]+\\\\.)?applovin\\\\.com[/:]","load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"^https?://([^/]+\\\\.)?vungle\\\\.com[/:]","load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"^https?://([^/]+\\\\.)?admob\\\\.com[/:]","load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"^https?://([^/]+\\\\.)?chartboost\\\\.com[/:]","load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"^https?://([^/]+\\\\.)?inmobi\\\\.com[/:]","load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"^https?://([^/]+\\\\.)?smaato\\\\.net[/:]","load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"^https?://([^/]+\\\\.)?2mdn\\\\.net[/:]","load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"^https?://([^/]+\\\\.)?nr-data\\\\.net[/:]","load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"^https?://([^/]+\\\\.)?yieldmanager\\\\.com[/:]","load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"^https?://([^/]+\\\\.)?facebook\\\\.net[/:].*fbads","load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"^https?://([^/]+\\\\.)?serving-sys\\\\.com[/:]","load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"^https?://([^/]+\\\\.)?quantserve\\\\.com[/:]","load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"^https?://([^/]+\\\\.)?scorecardresearch\\\\.com[/:]","load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"^https?://([^/]+\\\\.)?bluekai\\\\.com[/:]","load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"^https?://([^/]+\\\\.)?exoclick\\\\.com[/:]","load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"^https?://([^/]+\\\\.)?popads\\\\.net[/:]","load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"^https?://([^/]+\\\\.)?propellerads\\\\.com[/:]","load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"^https?://([^/]+\\\\.)?trafficjunky\\\\.com[/:]","load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"^https?://([^/]+\\\\.)?revcontent\\\\.com[/:]","load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"^https?://([^/]+\\\\.)?mgid\\\\.com[/:]","load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"^https?://([^/]+\\\\.)?zedo\\\\.com[/:]","load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"^https?://([^/]+\\\\.)?adtechus\\\\.com[/:]","load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"^https?://([^/]+\\\\.)?spotxchange\\\\.com[/:]","load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"^https?://([^/]+\\\\.)?sharethrough\\\\.com[/:]","load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"^https?://([^/]+\\\\.)?contextweb\\\\.com[/:]","load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"^https?://([^/]+\\\\.)?lijit\\\\.com[/:]","load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"^https?://([^/]+\\\\.)?adblade\\\\.com[/:]","load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"^https?://([^/]+\\\\.)?medianet\\\\.com[/:]","load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"/pagead/","load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"/adserver/","load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"/ads\\\\.js"},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"/ad\\\\.js"},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"/adsbygoogle\\\\.js"},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"/show_ads"},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"/adview"},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"/ad_iframe"},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"/adfetch"},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"/adhandler"},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"/gpt\\\\.js"},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"/pubads"},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"/gampad/"},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"/sponsor"},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"/_ad_","load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"tracking\\\\.js","load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"tracker\\\\.js","load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"analytics\\\\.js","load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"/pixel\\\\.gif","load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"/pixel\\\\.png","load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"/beacon\\\\.","load-type":["third-party"]},"action":{"type":"block"}}
+        {"trigger":{"url-filter":".*\\\\.doubleclick\\\\.net","resource-type":["script","image","style-sheet","raw","media","popup"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\\\.googlesyndication\\\\.com","resource-type":["script","image","style-sheet","raw","media","popup"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\\\.googleadservices\\\\.com","resource-type":["script","image","raw","popup"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\\\.google-analytics\\\\.com","resource-type":["script","image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\\\.googletagmanager\\\\.com","resource-type":["script","image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\\\.googletagservices\\\\.com","resource-type":["script","image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\\\.adnxs\\\\.com","resource-type":["script","image","style-sheet","raw","media","popup"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\\\.adsrvr\\\\.org","resource-type":["script","image","raw","popup"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\\\.advertising\\\\.com","resource-type":["script","image","raw","popup"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\\\.adform\\\\.net","resource-type":["script","image","raw","popup"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\\\.taboola\\\\.com","resource-type":["script","image","style-sheet","raw","popup"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\\\.outbrain\\\\.com","resource-type":["script","image","style-sheet","raw","popup"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\\\.criteo\\\\.com","resource-type":["script","image","raw","popup"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\\\.criteo\\\\.net","resource-type":["script","image","raw","popup"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\\\.moatads\\\\.com","resource-type":["script","image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\\\.amazon-adsystem\\\\.com","resource-type":["script","image","raw","popup"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\\\.rubiconproject\\\\.com","resource-type":["script","image","raw","popup"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\\\.pubmatic\\\\.com","resource-type":["script","image","raw","popup"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\\\.openx\\\\.net","resource-type":["script","image","raw","popup"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\\\.casalemedia\\\\.com","resource-type":["script","image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\\\.bidswitch\\\\.net","resource-type":["script","image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\\\.smartadserver\\\\.com","resource-type":["script","image","raw","popup"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\\\.adcolony\\\\.com","resource-type":["script","image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\\\.applovin\\\\.com","resource-type":["script","image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\\\.vungle\\\\.com","resource-type":["script","image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\\\.admob\\\\.com","resource-type":["script","image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\\\.chartboost\\\\.com","resource-type":["script","image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\\\.inmobi\\\\.com","resource-type":["script","image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\\\.smaato\\\\.net","resource-type":["script","image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\\\.2mdn\\\\.net","resource-type":["script","image","raw","media","popup"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\\\.nr-data\\\\.net","resource-type":["script","image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\\\.yieldmanager\\\\.com","resource-type":["script","image","raw","popup"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\\\.serving-sys\\\\.com","resource-type":["script","image","raw","popup"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\\\.quantserve\\\\.com","resource-type":["script","image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\\\.scorecardresearch\\\\.com","resource-type":["script","image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\\\.bluekai\\\\.com","resource-type":["script","image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\\\.exoclick\\\\.com","resource-type":["script","image","raw","popup"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\\\.popads\\\\.net","resource-type":["script","image","raw","popup"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\\\.propellerads\\\\.com","resource-type":["script","image","raw","popup"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\\\.trafficjunky\\\\.com","resource-type":["script","image","raw","popup"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\\\.revcontent\\\\.com","resource-type":["script","image","raw","popup"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\\\.mgid\\\\.com","resource-type":["script","image","raw","popup"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\\\.zedo\\\\.com","resource-type":["script","image","raw","popup"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\\\.adtechus\\\\.com","resource-type":["script","image","raw","popup"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\\\.sharethrough\\\\.com","resource-type":["script","image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\\\.hotjar\\\\.com","resource-type":["script","image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\\\.mouseflow\\\\.com","resource-type":["script","image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\\\.fullstory\\\\.com","resource-type":["script","image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\\\.mixpanel\\\\.com","resource-type":["script","image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\\\.segment\\\\.com","resource-type":["script","image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\\\.amplitude\\\\.com","resource-type":["script","image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\\\.demdex\\\\.net","resource-type":["script","image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\\\.omtrdc\\\\.net","resource-type":["script","image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\\\.adroll\\\\.com","resource-type":["script","image","raw","popup"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\\\.tradedoubler\\\\.com","resource-type":["script","image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\\\.ironsrc\\\\.com","resource-type":["script","image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\\\.mopub\\\\.com","resource-type":["script","image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":"/pagead/","resource-type":["script","image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":"/adserver/","resource-type":["script","image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":"/ads\\\\.js","resource-type":["script"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":"/ad\\\\.js","resource-type":["script"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":"/adsbygoogle\\\\.js","resource-type":["script"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":"/show_ads","resource-type":["script","image","raw"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":"/gpt\\\\.js","resource-type":["script"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":"/pubads","resource-type":["script","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":"/gampad/","resource-type":["script","image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":"/_ad_","resource-type":["script","image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":"tracking\\\\.js","resource-type":["script"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":"tracker\\\\.js","resource-type":["script"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":"analytics\\\\.js","resource-type":["script"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":"/pixel\\\\.gif","resource-type":["image"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":"/pixel\\\\.png","resource-type":["image"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":"/beacon\\\\.","resource-type":["image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":"/adview","resource-type":["script","image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":"/ad_iframe","resource-type":["script","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":"/adfetch","resource-type":["script","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":"/adhandler","resource-type":["script","raw"],"load-type":["third-party"]},"action":{"type":"block"}}
     ]
     """
     
@@ -486,35 +605,270 @@ class AdBlockEngine: ObservableObject {
     })();
     """
     
-    // MARK: - YouTube Ad Skip Script
+    // MARK: - YouTube Ad Skip Script v2
     static let youtubeAdSkipScript: String = """
     (function() {
         'use strict';
         if (!location.hostname.includes('youtube.com')) return;
-        if (window.__cyberYTAdSkip) return;
-        window.__cyberYTAdSkip = true;
+        if (window.__cyberYTv2) return;
+        window.__cyberYTv2 = true;
         
-        const skipInterval = setInterval(function() {
-            // Click skip button
-            var skipBtn = document.querySelector('.ytp-skip-ad-button, .ytp-ad-skip-button, .ytp-ad-skip-button-modern, [class*="skip-button"]');
-            if (skipBtn) { skipBtn.click(); return; }
+        // --- XHR Interception: Filter ad-related responses ---
+        const origXHROpen = XMLHttpRequest.prototype.open;
+        XMLHttpRequest.prototype.open = function(method, url) {
+            if (typeof url === 'string' && (
+                url.includes('/get_video_info') && url.includes('adformat') ||
+                url.includes('/api/stats/ads') ||
+                url.includes('doubleclick.net') ||
+                url.includes('googlesyndication.com') ||
+                url.includes('/pagead/') ||
+                url.includes('/ptracking')
+            )) {
+                this._blocked = true;
+            }
+            return origXHROpen.apply(this, arguments);
+        };
+        const origXHRSend = XMLHttpRequest.prototype.send;
+        XMLHttpRequest.prototype.send = function() {
+            if (this._blocked) { return; }
+            return origXHRSend.apply(this, arguments);
+        };
+        
+        // --- Skip & Fast-forward ---
+        function skipAds() {
+            // Click any skip button variant
+            var skipBtns = document.querySelectorAll(
+                '.ytp-skip-ad-button, .ytp-ad-skip-button, .ytp-ad-skip-button-modern, ' +
+                '.ytp-ad-skip-button-slot, [class*=\"skip-button\"], .videoAdUiSkipButton, ' +
+                'button[id^=\"skip-button\"], .ytp-ad-skip-button-container button'
+            );
+            skipBtns.forEach(function(btn) { try { btn.click(); } catch(e) {} });
             
-            // Speed through unskippable ads
+            // Speed through unskippable video ads
             var video = document.querySelector('video');
-            var adOverlay = document.querySelector('.ad-showing, .ytp-ad-player-overlay');
-            if (video && adOverlay) {
+            var adShowing = document.querySelector('.ad-showing, .ytp-ad-player-overlay, .ytp-ad-player-overlay-instream-info');
+            if (video && adShowing) {
+                video.muted = true;
                 video.currentTime = video.duration || 999;
                 video.playbackRate = 16;
             }
             
-            // Remove ad overlays
-            document.querySelectorAll('.ytp-ad-overlay-container, .ytp-ad-text-overlay, #player-ads').forEach(function(el) {
-                el.remove();
+            // Remove ad overlay containers
+            var adEls = document.querySelectorAll(
+                '.ytp-ad-overlay-container, .ytp-ad-text-overlay, #player-ads, ' +
+                '.ytp-ad-image-overlay, .ytp-ad-player-overlay-flyout-cta, ' +
+                '.ytd-promoted-sparkles-web-renderer, .ytd-display-ad-renderer, ' +
+                '.ytd-promoted-video-renderer, .ytd-ad-slot-renderer, ' +
+                '#masthead-ad, .ytd-banner-promo-renderer, ' +
+                'ytd-in-feed-ad-layout-renderer, ytd-ad-slot-renderer, ' +
+                '.ytd-merch-shelf-renderer, .ytp-ad-module, ' +
+                '#offer-module, .ytd-statement-banner-renderer'
+            );
+            adEls.forEach(function(el) {
+                try { el.remove(); } catch(e) {
+                    el.style.setProperty('display', 'none', 'important');
+                }
             });
-        }, 500);
+        }
         
-        // Stop after 2 minutes
-        setTimeout(function() { clearInterval(skipInterval); }, 120000);
+        // Run every 300ms
+        const skipInterval = setInterval(skipAds, 300);
+        
+        // Stop after 5 minutes per page
+        setTimeout(function() { clearInterval(skipInterval); }, 300000);
+        
+        // Also run on navigation (YouTube SPA)
+        var lastURL = location.href;
+        setInterval(function() {
+            if (location.href !== lastURL) {
+                lastURL = location.href;
+                skipAds();
+            }
+        }, 1000);
+    })();
+    """
+    
+    // MARK: - Anti-Anti-Adblock Script (prevents adblock detection)
+    static let antiAdBlockScript: String = """
+    (function() {
+        'use strict';
+        if (window.__cyberAntiDetect) return;
+        window.__cyberAntiDetect = true;
+        
+        // Stub adsbygoogle — prevents "ad blocker detected" warnings
+        Object.defineProperty(window, 'adsbygoogle', {
+            get: function() {
+                return { loaded: true, push: function() {}, length: 1 };
+            },
+            set: function() {},
+            configurable: false
+        });
+        
+        // Stub google ad objects
+        window.google_ad_modifications = {};
+        window.google_reactive_ads_global_state = {};
+        window.__google_ad_urls = [];
+        
+        // Stub common ad detection variables
+        window.canRunAds = true;
+        window.isAdBlockActive = false;
+        window.adBlockDetected = false;
+        window.adblockEnabled = false;
+        
+        // Override createElement to prevent bait element detection
+        var origCreate = document.createElement.bind(document);
+        document.createElement = function(tag) {
+            var el = origCreate(tag);
+            if (tag.toLowerCase() === 'div') {
+                var origGetComputed = window.getComputedStyle;
+                // Ensure bait divs always appear "visible"
+                var origOffsetHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight');
+                if (origOffsetHeight && origOffsetHeight.get) {
+                    Object.defineProperty(el, 'offsetHeight', {
+                        get: function() {
+                            if (this.className && (
+                                this.className.includes('ads') ||
+                                this.className.includes('ad-') ||
+                                this.className.includes('adsbox') ||
+                                this.id === 'ad-test'
+                            )) {
+                                return 1;
+                            }
+                            return origOffsetHeight.get.call(this);
+                        }
+                    });
+                }
+            }
+            return el;
+        };
+        
+        // Neutralize common anti-adblock scripts
+        try {
+            Object.defineProperty(window, 'blockAdBlock', {
+                get: function() { return { onDetected: function(){}, onNotDetected: function(fn){ if(fn) fn(); } }; },
+                set: function() {},
+                configurable: true
+            });
+        } catch(e) {}
+        
+        try {
+            Object.defineProperty(window, 'fuckAdBlock', {
+                get: function() { return { onDetected: function(){}, onNotDetected: function(fn){ if(fn) fn(); } }; },
+                set: function() {},
+                configurable: true
+            });
+        } catch(e) {}
+    })();
+    """
+    
+    // MARK: - Fingerprint Protection Script
+    static let fingerprintProtectionScript: String = """
+    (function() {
+        'use strict';
+        if (window.__cyberFPProtect) return;
+        window.__cyberFPProtect = true;
+        
+        // Canvas fingerprint protection — add subtle noise
+        var origToDataURL = HTMLCanvasElement.prototype.toDataURL;
+        HTMLCanvasElement.prototype.toDataURL = function(type) {
+            var ctx = this.getContext('2d');
+            if (ctx) {
+                var imgData = ctx.getImageData(0, 0, this.width, this.height);
+                for (var i = 0; i < imgData.data.length; i += 4) {
+                    imgData.data[i] = imgData.data[i] ^ 1; // Tiny noise
+                }
+                ctx.putImageData(imgData, 0, 0);
+            }
+            return origToDataURL.apply(this, arguments);
+        };
+        
+        // WebGL fingerprint protection
+        var origGetParameter = null;
+        try {
+            var c = document.createElement('canvas');
+            var gl = c.getContext('webgl') || c.getContext('experimental-webgl');
+            if (gl) {
+                origGetParameter = gl.__proto__.getParameter;
+                gl.__proto__.getParameter = function(param) {
+                    // Mask renderer/vendor info
+                    if (param === 37445) return 'Apple GPU';
+                    if (param === 37446) return 'Apple GPU';
+                    return origGetParameter.call(this, param);
+                };
+            }
+        } catch(e) {}
+        
+        // AudioContext fingerprint protection
+        try {
+            var origCreateOscillator = AudioContext.prototype.createOscillator;
+            AudioContext.prototype.createOscillator = function() {
+                var osc = origCreateOscillator.call(this);
+                // Add random detune to prevent audio fingerprinting
+                osc.detune.value = Math.random() * 0.01;
+                return osc;
+            };
+        } catch(e) {}
+        
+        // Navigator property spoofing
+        try {
+            Object.defineProperty(navigator, 'hardwareConcurrency', { get: function() { return 4; } });
+            Object.defineProperty(navigator, 'deviceMemory', { get: function() { return 8; } });
+        } catch(e) {}
+    })();
+    """
+    
+    // MARK: - Cookie Consent Auto-Dismiss Script
+    static let cookieConsentScript: String = """
+    (function() {
+        'use strict';
+        if (window.__cyberCookieDismiss) return;
+        window.__cyberCookieDismiss = true;
+        
+        function dismissCookies() {
+            // Click reject/decline buttons first (prefer rejecting tracking)
+            var rejectBtns = document.querySelectorAll(
+                '[class*=\"cookie\"] [class*=\"reject\"], [class*=\"cookie\"] [class*=\"decline\"], ' +
+                '[class*=\"consent\"] [class*=\"reject\"], [class*=\"consent\"] [class*=\"decline\"], ' +
+                '[id*=\"cookie\"] [class*=\"reject\"], [id*=\"cookie\"] [class*=\"decline\"], ' +
+                'button[class*=\"reject-all\"], button[class*=\"deny\"], ' +
+                '.cmp-reject-all, #onetrust-reject-all-handler, ' +
+                '.cookie-decline, .js-cookie-reject, [data-action=\"reject\"]'
+            );
+            for (var i = 0; i < rejectBtns.length; i++) {
+                try { rejectBtns[i].click(); return; } catch(e) {}
+            }
+            
+            // Click "accept necessary only" buttons
+            var necessaryBtns = document.querySelectorAll(
+                '[class*=\"necessary\"], [class*=\"essential\"], ' +
+                'button[class*=\"accept-necessary\"]'
+            );
+            for (var j = 0; j < necessaryBtns.length; j++) {
+                try { necessaryBtns[j].click(); return; } catch(e) {}
+            }
+            
+            // Last resort: close/dismiss the banner
+            var closeBtns = document.querySelectorAll(
+                '[class*=\"cookie\"] [class*=\"close\"], [class*=\"cookie\"] [class*=\"dismiss\"], ' +
+                '[id*=\"cookie\"] button[class*=\"close\"], ' +
+                '.cookie-banner .close, #cookie-notice .close'
+            );
+            for (var k = 0; k < closeBtns.length; k++) {
+                try { closeBtns[k].click(); return; } catch(e) {}
+            }
+        }
+        
+        // Try multiple times as banners may load late
+        setTimeout(dismissCookies, 1000);
+        setTimeout(dismissCookies, 3000);
+        setTimeout(dismissCookies, 5000);
+        
+        // Watch for dynamically added banners
+        var cookieObserver = new MutationObserver(function() {
+            dismissCookies();
+        });
+        cookieObserver.observe(document.documentElement, { childList: true, subtree: true });
+        setTimeout(function() { cookieObserver.disconnect(); }, 15000);
     })();
     """
 }

@@ -18,10 +18,12 @@ class WebViewStore: ObservableObject {
     @Published var pageTitle: String = "Yeni Sekme"
     @Published var isSecure: Bool = true
     @Published var currentURLString: String = "https://www.google.com"
+    let homeURL = URL(string: "https://www.google.com")!
     
     // The WKWebView instance — created once, reused
     private(set) var webView: WKWebView!
     private var coordinator: WebViewCoordinator!
+    private var refreshControl: UIRefreshControl?
     
     // Reference to managers (set from outside)
     weak var adBlockEngine: AdBlockEngine?
@@ -78,7 +80,12 @@ class WebViewStore: ObservableObject {
         
         // Use standard Safari iOS user agent — NO custom suffix
         // This prevents Google CAPTCHA/verification loops
-        wv.customUserAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+        wv.customUserAgent = nil
+        
+        let refresh = UIRefreshControl()
+        refresh.addTarget(coordinator, action: #selector(WebViewCoordinator.handlePullToRefresh(_:)), for: .valueChanged)
+        wv.scrollView.refreshControl = refresh
+        self.refreshControl = refresh
         
         return wv
     }
@@ -157,6 +164,17 @@ class WebViewStore: ObservableObject {
         webView.reload()
     }
     
+    func stopLoading() {
+        webView.stopLoading()
+        DispatchQueue.main.async { [weak self] in
+            self?.isLoading = false
+        }
+    }
+    
+    func goHome() {
+        loadURL(homeURL)
+    }
+    
     // MARK: - State Update (called by coordinator)
     func updateNavigationState() {
         DispatchQueue.main.async { [weak self] in
@@ -170,13 +188,10 @@ class WebViewStore: ObservableObject {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             self.isLoading = false
+            self.refreshControl?.endRefreshing()
             self.canGoBack = self.webView.canGoBack
             self.canGoForward = self.webView.canGoForward
             self.pageTitle = self.webView.title ?? "Sayfa"
-            
-            // Re-inject ad block rules + scripts on EVERY page load
-            // This ensures rules are always active even if WebKit cleared them
-            self.injectScripts()
             
             if let currentURL = self.webView.url {
                 self.currentURLString = currentURL.absoluteString
@@ -228,6 +243,10 @@ class WebViewCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScript
         self.store = store
     }
     
+    @objc func handlePullToRefresh(_ sender: UIRefreshControl) {
+        store?.reload()
+    }
+    
     // MARK: - WKScriptMessageHandler
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
         if message.name == "adBlocked" {
@@ -263,12 +282,14 @@ class WebViewCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScript
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
         DispatchQueue.main.async { [weak self] in
             self?.store?.isLoading = false
+            self?.store?.webView.scrollView.refreshControl?.endRefreshing()
         }
     }
     
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         DispatchQueue.main.async { [weak self] in
             self?.store?.isLoading = false
+            self?.store?.webView.scrollView.refreshControl?.endRefreshing()
         }
     }
     

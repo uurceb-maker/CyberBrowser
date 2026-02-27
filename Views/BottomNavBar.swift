@@ -4,11 +4,14 @@ import SwiftUI
 struct BottomNavBar: View {
     let canGoBack: Bool
     let canGoForward: Bool
+    let isLoading: Bool
     let tabCount: Int
     
     let onBack: () -> Void
     let onForward: () -> Void
-    let onSearch: () -> Void
+    let onHome: () -> Void
+    let onReloadOrStop: () -> Void
+    let onAddressFocus: () -> Void
     let onTabs: () -> Void
     let onMenu: () -> Void
     
@@ -32,10 +35,24 @@ struct BottomNavBar: View {
             
             Spacer()
             
-            // Search Button (Yellow circle)
-            Button(action: onSearch) {
+            NavButton(
+                icon: "house",
+                isEnabled: true,
+                action: onHome
+            )
+            
+            Spacer()
+            
+            NavButton(
+                icon: isLoading ? "xmark" : "arrow.clockwise",
+                isEnabled: true,
+                action: onReloadOrStop
+            )
+            
+            Spacer()
+            
+            Button(action: onAddressFocus) {
                 ZStack {
-                    // Glow effect
                     Circle()
                         .fill(Color.cyberYellow.opacity(0.2))
                         .frame(width: 52, height: 52)
