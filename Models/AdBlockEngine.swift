@@ -72,7 +72,7 @@ class AdBlockEngine: ObservableObject {
         "tradedoubler.com", "awin1.com", "impact.com"
     ]
     private let blockedPathKeywords: Set<String> = [
-        "/ads", "/ad-", "/ad_", "/adserver", "/doubleclick", "/googlesyndication", "/pagead",
+        "/adserver", "/doubleclick", "/googlesyndication", "/pagead",
         "/reklam", "/sponsor", "/promo", "/banner", "/bonus", "/casino", "/bahis", "/bet"
     ]
     
@@ -528,8 +528,8 @@ class AdBlockEngine: ObservableObject {
     
     static let firstPartyPathRules: String = """
     [
-        {"trigger":{"url-filter":"[\\\\/\\\\-_](ad|ads|advert|reklam|sponsor|sponsored|promo|promotion)[\\\\/\\\\-_]","resource-type":["image","script","style-sheet","raw","media","svg-document","popup"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"(banner|prebid|vast|preroll|midroll|instream|outstream|doubleclick|pagead|googlesyndication|adservice)","resource-type":["image","script","raw","media","popup"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":"[\\\\/\\\\-_](reklam|sponsor|sponsored|promo|promotion)[\\\\/\\\\-_]","resource-type":["image","script","style-sheet","raw","media","svg-document","popup"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":"(banner|prebid|vast|preroll|midroll|instream|outstream|doubleclick|pagead|googlesyndication)","resource-type":["image","script","raw","media","popup"]},"action":{"type":"block"}},
         {"trigger":{"url-filter":"(casino|bahis|bet|bonus)","resource-type":["image","script","raw","media","popup"]},"action":{"type":"block"}}
     ]
     """
@@ -562,8 +562,8 @@ class AdBlockEngine: ObservableObject {
         ];
         
         const adKeywords = [
-            'ad', 'ads', 'advert', 'reklam', 'sponsor', 'promo',
-            'casino', 'bahis', 'bet', 'bonus', 'preroll', 'midroll'
+            'reklam', 'sponsor', 'sponsored', 'promo',
+            'casino', 'bahis', 'bonus', 'preroll', 'midroll'
         ];
         
         let totalHidden = 0;
@@ -580,6 +580,8 @@ class AdBlockEngine: ObservableObject {
         function hideContainer(el) {
             if (!el) return 0;
             const container = el.closest('section, article, div, aside, li') || el;
+            const rect = container.getBoundingClientRect ? container.getBoundingClientRect() : null;
+            if (!rect || rect.height < 80 || rect.width < 200) return 0;
             if (container && container.style.display !== 'none') {
                 container.style.setProperty('display', 'none', 'important');
                 container.style.setProperty('visibility', 'hidden', 'important');
@@ -592,7 +594,7 @@ class AdBlockEngine: ObservableObject {
         
         function hideLikelyAdBlocks() {
             let removed = 0;
-            const candidates = document.querySelectorAll('a, iframe, img, video, div, section');
+            const candidates = document.querySelectorAll('iframe, img, video, a[href], [id*="reklam"], [class*="reklam"], [id*="sponsor"], [class*="sponsor"]');
             candidates.forEach(function(el) {
                 const joined = [
                     el.id,
