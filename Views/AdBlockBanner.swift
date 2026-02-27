@@ -75,7 +75,7 @@ struct AdBlockBanner: View {
             .padding(.horizontal, CyberTheme.padding)
             .transition(.move(edge: .top).combined(with: .opacity))
             .animation(.spring(response: 0.5, dampingFraction: 0.7), value: adBlockEngine.isEnabled)
-            .onChange(of: adBlockEngine.blockedAdsCount) { newValue in
+            .onChange(of: adBlockEngine.blockedAdsCount) { _, newValue in
                 // Animate count change
                 withAnimation(.easeOut(duration: 0.3)) {
                     displayCount = newValue

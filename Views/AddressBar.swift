@@ -91,7 +91,7 @@ struct AddressBar: View {
         )
         .padding(.horizontal, CyberTheme.padding)
         .padding(.vertical, 6)
-        .onChange(of: isFocused) { focused in
+        .onChange(of: isFocused) { _, focused in
             if !focused {
                 isEditing = false
             }
@@ -102,7 +102,7 @@ struct AddressBar: View {
         .onAppear {
             editText = urlString
         }
-        .onChange(of: urlString) { newValue in
+        .onChange(of: urlString) { _, newValue in
             if !isEditing {
                 editText = newValue
             }

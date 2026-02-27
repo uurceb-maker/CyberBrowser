@@ -34,7 +34,7 @@ struct ContentView: View {
                 quickAccessBar
                 
                 if webViewStore.isLoading {
-                    ProgressView(value: nil)
+                    ProgressView()
                         .progressViewStyle(.linear)
                         .tint(.cyberYellow)
                         .frame(height: 2)
@@ -85,15 +85,15 @@ struct ContentView: View {
                 webViewStore.loadURL(tabManager.activeTab.url)
             }
         }
-        .onChange(of: webViewStore.currentURLString) { newURL in
+        .onChange(of: webViewStore.currentURLString) { _, newURL in
             displayURL = newURL
         }
-        .onChange(of: tabManager.activeTabIndex) { _ in
+        .onChange(of: tabManager.activeTabIndex) { _, _ in
             let tab = tabManager.activeTab
             webViewStore.loadURL(tab.url)
             displayURL = tab.url.absoluteString
         }
-        .onChange(of: adBlockEngine.isEnabled) { _ in
+        .onChange(of: adBlockEngine.isEnabled) { _, _ in
             if adBlockEngine.needsRecompile {
                 webViewStore.compileAdBlockRules {
                     webViewStore.injectScripts()
