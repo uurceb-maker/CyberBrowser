@@ -229,6 +229,21 @@ class WebViewStore: ObservableObject {
                     }
                 }
             }
+
+            // Re-inject cosmetic scripts for SPA navigation
+            self.webView.evaluateJavaScript("""
+                if (!window.__cyberAdBlockInjected) {
+                    // Script will be re-injected by WKUserScript on next navigation
+                } else {
+                    // Force re-run hiding for SPA pages
+                    window.__cyberAdBlockInjected = false;
+                }
+            """) { _, _ in }
+
+            // Re-run ad blocking scripts on every page finish
+            if let engine = self.adBlockEngine, engine.isEnabled {
+                self.webView.evaluateJavaScript(AdBlockEngine.cosmeticFilterScript) { _, _ in }
+            }
             
             self.isNavigatingProgrammatically = false
         }
@@ -321,6 +336,24 @@ class WebViewCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScript
             return
         }
         
+        decisionHandler(.allow)
+    }
+
+    // MARK: - Response Policy (catches sub-resource loads)
+    func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse, decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
+        if let url = navigationResponse.response.url,
+           let engine = store?.adBlockEngine,
+           engine.isEnabled,
+           !navigationResponse.isForMainFrame,
+           engine.shouldBlockURL(url) {
+            print("[AdBlock] 🛡️ Response blocked: \(url.host ?? "")")
+            DispatchQueue.main.async {
+                engine.handleBlockedAd(count: 1, domain: url.host ?? "")
+                self.store?.tabManager?.incrementBlockedAds()
+            }
+            decisionHandler(.cancel)
+            return
+        }
         decisionHandler(.allow)
     }
     

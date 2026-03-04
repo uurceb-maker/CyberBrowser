@@ -79,7 +79,9 @@ class AdBlockEngine: ObservableObject {
     // MARK: - EasyList Download Config
     private let easyListURLs: [String] = [
         "https://easylist-downloads.adblockplus.org/easylist_content_blocker.json",
-        "https://raw.githubusercontent.com/niceincode/niceincode.github.io/master/nicelist/nicelist.json"
+        "https://cdn.jsdelivr.net/gh/niceincode/niceincode.github.io@master/nicelist/nicelist.json",
+        "https://raw.githubusercontent.com/niceincode/niceincode.github.io/master/nicelist/nicelist.json",
+        "https://easylist.to/easylist/easylist.txt"
     ]
     private let cacheFileName = "easylist_content_blocker.json"
     private let cacheMaxAgeDays: Double = 7
@@ -340,6 +342,14 @@ class AdBlockEngine: ObservableObject {
             forMainFrameOnly: false
         )
         controller.addUserScript(antiDetectScript)
+
+        // Fingerprint protection (document START, main frame only)
+        let fpScript = WKUserScript(
+            source: Self.fingerprintProtectionScript,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: true
+        )
+        controller.addUserScript(fpScript)
         
         // Layer 3: JS Cosmetic Filter (runs in ALL frames)
         let cosmeticScript = WKUserScript(
@@ -408,79 +418,79 @@ class AdBlockEngine: ObservableObject {
     // Simplified ICU regex with resource-type filtering for reliable compilation
     static let networkBlockRules: String = """
     [
-        {"trigger":{"url-filter":".*\\\\.doubleclick\\\\.net","resource-type":["script","image","style-sheet","raw","media","popup"],"load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":".*\\\\.googlesyndication\\\\.com","resource-type":["script","image","style-sheet","raw","media","popup"],"load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":".*\\\\.googleadservices\\\\.com","resource-type":["script","image","raw","popup"],"load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":".*\\\\.google-analytics\\\\.com","resource-type":["script","image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":".*\\\\.googletagmanager\\\\.com","resource-type":["script","image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":".*\\\\.googletagservices\\\\.com","resource-type":["script","image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":".*\\\\.adnxs\\\\.com","resource-type":["script","image","style-sheet","raw","media","popup"],"load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":".*\\\\.adsrvr\\\\.org","resource-type":["script","image","raw","popup"],"load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":".*\\\\.advertising\\\\.com","resource-type":["script","image","raw","popup"],"load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":".*\\\\.adform\\\\.net","resource-type":["script","image","raw","popup"],"load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":".*\\\\.taboola\\\\.com","resource-type":["script","image","style-sheet","raw","popup"],"load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":".*\\\\.outbrain\\\\.com","resource-type":["script","image","style-sheet","raw","popup"],"load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":".*\\\\.criteo\\\\.com","resource-type":["script","image","raw","popup"],"load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":".*\\\\.criteo\\\\.net","resource-type":["script","image","raw","popup"],"load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":".*\\\\.moatads\\\\.com","resource-type":["script","image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":".*\\\\.amazon-adsystem\\\\.com","resource-type":["script","image","raw","popup"],"load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":".*\\\\.rubiconproject\\\\.com","resource-type":["script","image","raw","popup"],"load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":".*\\\\.pubmatic\\\\.com","resource-type":["script","image","raw","popup"],"load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":".*\\\\.openx\\\\.net","resource-type":["script","image","raw","popup"],"load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":".*\\\\.casalemedia\\\\.com","resource-type":["script","image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":".*\\\\.bidswitch\\\\.net","resource-type":["script","image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":".*\\\\.smartadserver\\\\.com","resource-type":["script","image","raw","popup"],"load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":".*\\\\.adcolony\\\\.com","resource-type":["script","image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":".*\\\\.applovin\\\\.com","resource-type":["script","image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":".*\\\\.vungle\\\\.com","resource-type":["script","image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":".*\\\\.admob\\\\.com","resource-type":["script","image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":".*\\\\.chartboost\\\\.com","resource-type":["script","image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":".*\\\\.inmobi\\\\.com","resource-type":["script","image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":".*\\\\.smaato\\\\.net","resource-type":["script","image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":".*\\\\.2mdn\\\\.net","resource-type":["script","image","raw","media","popup"],"load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":".*\\\\.nr-data\\\\.net","resource-type":["script","image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":".*\\\\.yieldmanager\\\\.com","resource-type":["script","image","raw","popup"],"load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":".*\\\\.serving-sys\\\\.com","resource-type":["script","image","raw","popup"],"load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":".*\\\\.quantserve\\\\.com","resource-type":["script","image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":".*\\\\.scorecardresearch\\\\.com","resource-type":["script","image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":".*\\\\.bluekai\\\\.com","resource-type":["script","image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":".*\\\\.exoclick\\\\.com","resource-type":["script","image","raw","popup"],"load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":".*\\\\.popads\\\\.net","resource-type":["script","image","raw","popup"],"load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":".*\\\\.propellerads\\\\.com","resource-type":["script","image","raw","popup"],"load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":".*\\\\.trafficjunky\\\\.com","resource-type":["script","image","raw","popup"],"load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":".*\\\\.revcontent\\\\.com","resource-type":["script","image","raw","popup"],"load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":".*\\\\.mgid\\\\.com","resource-type":["script","image","raw","popup"],"load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":".*\\\\.zedo\\\\.com","resource-type":["script","image","raw","popup"],"load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":".*\\\\.adtechus\\\\.com","resource-type":["script","image","raw","popup"],"load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":".*\\\\.sharethrough\\\\.com","resource-type":["script","image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":".*\\\\.hotjar\\\\.com","resource-type":["script","image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":".*\\\\.mouseflow\\\\.com","resource-type":["script","image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":".*\\\\.fullstory\\\\.com","resource-type":["script","image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":".*\\\\.mixpanel\\\\.com","resource-type":["script","image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":".*\\\\.segment\\\\.com","resource-type":["script","image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":".*\\\\.amplitude\\\\.com","resource-type":["script","image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":".*\\\\.demdex\\\\.net","resource-type":["script","image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":".*\\\\.omtrdc\\\\.net","resource-type":["script","image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":".*\\\\.adroll\\\\.com","resource-type":["script","image","raw","popup"],"load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":".*\\\\.tradedoubler\\\\.com","resource-type":["script","image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":".*\\\\.ironsrc\\\\.com","resource-type":["script","image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":".*\\\\.mopub\\\\.com","resource-type":["script","image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\.doubleclick\\.net","resource-type":["script","image","style-sheet","raw","media","popup"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\.googlesyndication\\.com","resource-type":["script","image","style-sheet","raw","media","popup"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\.googleadservices\\.com","resource-type":["script","image","raw","popup"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\.google-analytics\\.com","resource-type":["script","image","raw"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\.googletagmanager\\.com","resource-type":["script","image","raw"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\.googletagservices\\.com","resource-type":["script","image","raw"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\.adnxs\\.com","resource-type":["script","image","style-sheet","raw","media","popup"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\.adsrvr\\.org","resource-type":["script","image","raw","popup"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\.advertising\\.com","resource-type":["script","image","raw","popup"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\.adform\\.net","resource-type":["script","image","raw","popup"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\.taboola\\.com","resource-type":["script","image","style-sheet","raw","popup"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\.outbrain\\.com","resource-type":["script","image","style-sheet","raw","popup"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\.criteo\\.com","resource-type":["script","image","raw","popup"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\.criteo\\.net","resource-type":["script","image","raw","popup"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\.moatads\\.com","resource-type":["script","image","raw"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\.amazon-adsystem\\.com","resource-type":["script","image","raw","popup"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\.rubiconproject\\.com","resource-type":["script","image","raw","popup"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\.pubmatic\\.com","resource-type":["script","image","raw","popup"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\.openx\\.net","resource-type":["script","image","raw","popup"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\.casalemedia\\.com","resource-type":["script","image","raw"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\.bidswitch\\.net","resource-type":["script","image","raw"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\.smartadserver\\.com","resource-type":["script","image","raw","popup"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\.adcolony\\.com","resource-type":["script","image","raw"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\.applovin\\.com","resource-type":["script","image","raw"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\.vungle\\.com","resource-type":["script","image","raw"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\.admob\\.com","resource-type":["script","image","raw"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\.chartboost\\.com","resource-type":["script","image","raw"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\.inmobi\\.com","resource-type":["script","image","raw"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\.smaato\\.net","resource-type":["script","image","raw"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\.2mdn\\.net","resource-type":["script","image","raw","media","popup"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\.nr-data\\.net","resource-type":["script","image","raw"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\.yieldmanager\\.com","resource-type":["script","image","raw","popup"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\.serving-sys\\.com","resource-type":["script","image","raw","popup"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\.quantserve\\.com","resource-type":["script","image","raw"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\.scorecardresearch\\.com","resource-type":["script","image","raw"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\.bluekai\\.com","resource-type":["script","image","raw"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\.exoclick\\.com","resource-type":["script","image","raw","popup"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\.popads\\.net","resource-type":["script","image","raw","popup"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\.propellerads\\.com","resource-type":["script","image","raw","popup"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\.trafficjunky\\.com","resource-type":["script","image","raw","popup"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\.revcontent\\.com","resource-type":["script","image","raw","popup"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\.mgid\\.com","resource-type":["script","image","raw","popup"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\.zedo\\.com","resource-type":["script","image","raw","popup"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\.adtechus\\.com","resource-type":["script","image","raw","popup"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\.sharethrough\\.com","resource-type":["script","image","raw"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\.hotjar\\.com","resource-type":["script","image","raw"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\.mouseflow\\.com","resource-type":["script","image","raw"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\.fullstory\\.com","resource-type":["script","image","raw"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\.mixpanel\\.com","resource-type":["script","image","raw"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\.segment\\.com","resource-type":["script","image","raw"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\.amplitude\\.com","resource-type":["script","image","raw"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\.demdex\\.net","resource-type":["script","image","raw"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\.omtrdc\\.net","resource-type":["script","image","raw"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\.adroll\\.com","resource-type":["script","image","raw","popup"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\.tradedoubler\\.com","resource-type":["script","image","raw"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\.ironsrc\\.com","resource-type":["script","image","raw"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":".*\\.mopub\\.com","resource-type":["script","image","raw"]},"action":{"type":"block"}},
         {"trigger":{"url-filter":"/pagead/","resource-type":["script","image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
         {"trigger":{"url-filter":"/adserver/","resource-type":["script","image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"/ads\\\\.js","resource-type":["script"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"/ad\\\\.js","resource-type":["script"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"/adsbygoogle\\\\.js","resource-type":["script"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"/show_ads","resource-type":["script","image","raw"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"/gpt\\\\.js","resource-type":["script"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":"/ads\\.js","resource-type":["script"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":"/ad\\.js","resource-type":["script"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":"/adsbygoogle\\.js","resource-type":["script"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":"/show_ads","resource-type":["script","image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":"/gpt\\.js","resource-type":["script"],"load-type":["third-party"]},"action":{"type":"block"}},
         {"trigger":{"url-filter":"/pubads","resource-type":["script","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
         {"trigger":{"url-filter":"/gampad/","resource-type":["script","image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
         {"trigger":{"url-filter":"/_ad_","resource-type":["script","image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"tracking\\\\.js","resource-type":["script"],"load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"tracker\\\\.js","resource-type":["script"],"load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"analytics\\\\.js","resource-type":["script"],"load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"/pixel\\\\.gif","resource-type":["image"],"load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"/pixel\\\\.png","resource-type":["image"],"load-type":["third-party"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"/beacon\\\\.","resource-type":["image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":"tracking\\.js","resource-type":["script"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":"tracker\\.js","resource-type":["script"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":"analytics\\.js","resource-type":["script"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":"/pixel\\.gif","resource-type":["image"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":"/pixel\\.png","resource-type":["image"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":"/beacon\\.","resource-type":["image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
         {"trigger":{"url-filter":"/adview","resource-type":["script","image","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
         {"trigger":{"url-filter":"/ad_iframe","resource-type":["script","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
         {"trigger":{"url-filter":"/adfetch","resource-type":["script","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
@@ -528,7 +538,7 @@ class AdBlockEngine: ObservableObject {
     
     static let firstPartyPathRules: String = """
     [
-        {"trigger":{"url-filter":"[\\\\/\\\\-_](reklam|sponsor|sponsored|promo|promotion)[\\\\/\\\\-_]","resource-type":["image","script","style-sheet","raw","media","svg-document","popup"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":"[\\/\\-_](reklam|sponsor|sponsored|promo|promotion)[\\/\\-_]","resource-type":["image","script","style-sheet","raw","media","svg-document","popup"]},"action":{"type":"block"}},
         {"trigger":{"url-filter":"(banner|prebid|vast|preroll|midroll|instream|outstream|doubleclick|pagead|googlesyndication)","resource-type":["image","script","raw","media","popup"]},"action":{"type":"block"}},
         {"trigger":{"url-filter":"(casino|bahis|bet|bonus)","resource-type":["image","script","raw","media","popup"]},"action":{"type":"block"}}
     ]
@@ -685,81 +695,115 @@ class AdBlockEngine: ObservableObject {
     (function() {
         'use strict';
         if (!location.hostname.includes('youtube.com')) return;
-        if (window.__cyberYTv2) return;
-        window.__cyberYTv2 = true;
-        
-        // --- XHR Interception: Filter ad-related responses ---
+        if (window.__cyberYTv3) return;
+        window.__cyberYTv3 = true;
+        // --- 1. XHR/Fetch Interception ---
         const origXHROpen = XMLHttpRequest.prototype.open;
+        const adURLPatterns = ['/get_video_info', '/api/stats/ads', 'doubleclick.net',
+            'googlesyndication.com', '/pagead/', '/ptracking', 'youtube.com/ad_',
+            '/generate_204', 'play.google.com/log'];
+
         XMLHttpRequest.prototype.open = function(method, url) {
-            if (typeof url === 'string' && (
-                url.includes('/get_video_info') && url.includes('adformat') ||
-                url.includes('/api/stats/ads') ||
-                url.includes('doubleclick.net') ||
-                url.includes('googlesyndication.com') ||
-                url.includes('/pagead/') ||
-                url.includes('/ptracking')
-            )) {
-                this._blocked = true;
-            }
+            const urlStr = String(url || '');
+            this._cyberBlocked = adURLPatterns.some(p => urlStr.includes(p));
             return origXHROpen.apply(this, arguments);
         };
         const origXHRSend = XMLHttpRequest.prototype.send;
         XMLHttpRequest.prototype.send = function() {
-            if (this._blocked) { return; }
+            if (this._cyberBlocked) return;
             return origXHRSend.apply(this, arguments);
         };
-        
-        // --- Skip & Fast-forward ---
-        function skipAds() {
-            // Click any skip button variant
-            var skipBtns = document.querySelectorAll(
-                '.ytp-skip-ad-button, .ytp-ad-skip-button, .ytp-ad-skip-button-modern, ' +
-                '.ytp-ad-skip-button-slot, [class*=\"skip-button\"], .videoAdUiSkipButton, ' +
-                'button[id^=\"skip-button\"], .ytp-ad-skip-button-container button'
-            );
-            skipBtns.forEach(function(btn) { try { btn.click(); } catch(e) {} });
-            
-            // Speed through unskippable video ads
-            var video = document.querySelector('video');
-            var adShowing = document.querySelector('.ad-showing, .ytp-ad-player-overlay, .ytp-ad-player-overlay-instream-info');
-            if (video && adShowing) {
+        const origFetch = window.fetch;
+        window.fetch = function(input) {
+            const url = String(typeof input === 'string' ? input : (input && input.url) || '');
+            if (adURLPatterns.some(p => url.includes(p))) {
+                return Promise.resolve(new Response('', {status: 200}));
+            }
+            return origFetch.apply(this, arguments);
+        };
+        // --- 2. Ad Detection + Skip ---
+        function handleAds() {
+            // Click all skip button variants
+            const skipSelectors = [
+                '.ytp-skip-ad-button', '.ytp-ad-skip-button', '.ytp-ad-skip-button-modern',
+                '.ytp-ad-skip-button-slot', 'button.ytp-ad-skip-button-modern',
+                '.videoAdUiSkipButton', 'button[id*="skip"]',
+                '.ytp-ad-skip-button-container button'
+            ];
+            skipSelectors.forEach(sel => {
+                document.querySelectorAll(sel).forEach(btn => {
+                    try { btn.click(); } catch(e) {}
+                });
+            });
+            // Detect ad-showing state
+            const player = document.querySelector('.html5-video-player');
+            const video = document.querySelector('video');
+            if (player && player.classList.contains('ad-showing') && video) {
                 video.muted = true;
-                video.currentTime = video.duration || 999;
+                if (video.duration && isFinite(video.duration)) {
+                    video.currentTime = video.duration;
+                }
                 video.playbackRate = 16;
             }
-            
-            // Remove ad overlay containers
-            var adEls = document.querySelectorAll(
-                '.ytp-ad-overlay-container, .ytp-ad-text-overlay, #player-ads, ' +
-                '.ytp-ad-image-overlay, .ytp-ad-player-overlay-flyout-cta, ' +
-                '.ytd-promoted-sparkles-web-renderer, .ytd-display-ad-renderer, ' +
-                '.ytd-promoted-video-renderer, .ytd-ad-slot-renderer, ' +
-                '#masthead-ad, .ytd-banner-promo-renderer, ' +
-                'ytd-in-feed-ad-layout-renderer, ytd-ad-slot-renderer, ' +
-                '.ytd-merch-shelf-renderer, .ytp-ad-module, ' +
-                '#offer-module, .ytd-statement-banner-renderer'
-            );
-            adEls.forEach(function(el) {
-                try { el.remove(); } catch(e) {
-                    el.style.setProperty('display', 'none', 'important');
-                }
+            // Remove ad overlay elements
+            const adSelectors = [
+                '.ytp-ad-overlay-container', '.ytp-ad-text-overlay', '#player-ads',
+                '.ytp-ad-image-overlay', '.ytd-promoted-sparkles-web-renderer',
+                '.ytd-display-ad-renderer', '.ytd-promoted-video-renderer',
+                '.ytd-ad-slot-renderer', '#masthead-ad', '.ytd-banner-promo-renderer',
+                'ytd-in-feed-ad-layout-renderer', 'ytd-ad-slot-renderer',
+                '.ytd-merch-shelf-renderer', '.ytp-ad-module', '#offer-module',
+                '.ytd-statement-banner-renderer', 'ytd-engagement-panel-section-list-renderer[target-id="engagement-panel-ads"]',
+                '.ytp-ad-player-overlay-flyout-cta', '.ytp-ad-action-interstitial'
+            ];
+            adSelectors.forEach(sel => {
+                document.querySelectorAll(sel).forEach(el => {
+                    try { el.remove(); } catch(e) {
+                        el.style.setProperty('display', 'none', 'important');
+                    }
+                });
             });
         }
-        
-        // Run every 300ms
-        const skipInterval = setInterval(skipAds, 300);
-        
-        // Stop after 5 minutes per page
-        setTimeout(function() { clearInterval(skipInterval); }, 300000);
-        
-        // Also run on navigation (YouTube SPA)
-        var lastURL = location.href;
+        // --- 3. MutationObserver for ad-showing class ---
+        const playerObserver = new MutationObserver(function(mutations) {
+            mutations.forEach(function(m) {
+                if (m.type === 'attributes' && m.attributeName === 'class') {
+                    const target = m.target;
+                    if (target.classList && target.classList.contains('ad-showing')) {
+                        handleAds();
+                    }
+                }
+            });
+        });
+        function observePlayer() {
+            const player = document.querySelector('.html5-video-player');
+            if (player) {
+                playerObserver.observe(player, { attributes: true, attributeFilter: ['class'] });
+            }
+        }
+        // --- 4. Run loop + SPA handling ---
+        const adInterval = setInterval(handleAds, 500);
+        setTimeout(function() { clearInterval(adInterval); }, 300000);
+
+        observePlayer();
+        let lastHref = location.href;
         setInterval(function() {
-            if (location.href !== lastURL) {
-                lastURL = location.href;
-                skipAds();
+            if (location.href !== lastHref) {
+                lastHref = location.href;
+                handleAds();
+                setTimeout(observePlayer, 1000);
             }
         }, 1000);
+        // Initial run
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', function() {
+                handleAds();
+                observePlayer();
+            });
+        } else {
+            handleAds();
+            observePlayer();
+        }
     })();
     """
     
