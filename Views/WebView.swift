@@ -341,6 +341,13 @@ class WebViewCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScript
 
     // MARK: - Response Policy (catches sub-resource loads)
     func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse, decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
+        // Don't block video/media content types
+        let contentType = navigationResponse.response.mimeType ?? ""
+        if contentType.hasPrefix("video/") || contentType.hasPrefix("audio/") || contentType.contains("mpegurl") || contentType.contains("mp2t") {
+            decisionHandler(.allow)
+            return
+        }
+
         if let url = navigationResponse.response.url,
            let engine = store?.adBlockEngine,
            engine.isEnabled,
