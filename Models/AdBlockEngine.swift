@@ -101,6 +101,11 @@ class AdBlockEngine: ObservableObject {
     private let cacheMaxAgeDays: Double = 7
     private let maxRulesPerChunk = 50000
     private let maxRetryAttempts = 3
+    private let easyListIdentifierPrefix = "easylist_"
+    private let easyListRuleCountKey = "easyListRuleCount"
+    private let easyListChunkCountKey = "easyListChunkCount"
+    private var embeddedRuleGroupCount: Int = 0
+    private var easyListActiveRuleCount: Int = 0
     
     // MARK: - init
     init() {
@@ -180,104 +185,194 @@ class AdBlockEngine: ObservableObject {
         group.notify(queue: .main) { [weak self] in
             guard let self = self else { return }
             self.compiledRuleLists = compiled
+            self.embeddedRuleGroupCount = compiled.count
+            self.easyListActiveRuleCount = 0
             self.isCompiling = false
             self.needsRecompile = false
-            self.filterInfo = "\(compiled.count) kural grubu aktif"
-            print("[AdBlock] 🎯 Embedded compilation: \(compiled.count)/2 groups compiled")
+            self.updateFilterInfo()
+            print("[AdBlock] Embedded compilation: \(compiled.count)/3 groups compiled")
             completion()
         }
+    }
+
+    private func updateFilterInfo() {
+        filterInfo = "\(embeddedRuleGroupCount) embedded + \(easyListActiveRuleCount) EasyList kuralı aktif"
     }
     
     // MARK: - Download EasyList (background enhancement with retry + fallback)
     private func downloadAndCompileEasyList() {
-        // Check cache first
-        if let cacheURL = getCacheFileURL(),
-           FileManager.default.fileExists(atPath: cacheURL.path),
-           let attrs = try? FileManager.default.attributesOfItem(atPath: cacheURL.path),
-           let modDate = attrs[.modificationDate] as? Date,
-           Date().timeIntervalSince(modDate) < cacheMaxAgeDays * 86400 {
-            
-            // Cache is fresh — compile in background
-            if let data = try? Data(contentsOf: cacheURL),
-               let json = String(data: data, encoding: .utf8) {
-                print("[AdBlock] 📦 Loading EasyList from cache")
-                compileDownloadedRules(json)
-                return
+        // 1) Prefer already-compiled WKContentRuleList cache (skip compile cost)
+        loadCompiledEasyListFromStore { [weak self] loadedFromStore in
+            guard let self = self else { return }
+            if loadedFromStore { return }
+
+            // 2) Fallback to JSON text cache in documents directory
+            DispatchQueue.global(qos: .utility).async { [weak self] in
+                guard let self = self else { return }
+                if let cacheURL = self.getCacheFileURL(),
+                   FileManager.default.fileExists(atPath: cacheURL.path),
+                   let attrs = try? FileManager.default.attributesOfItem(atPath: cacheURL.path),
+                   let modDate = attrs[.modificationDate] as? Date,
+                   Date().timeIntervalSince(modDate) < self.cacheMaxAgeDays * 86400,
+                   let data = try? Data(contentsOf: cacheURL),
+                   let rawText = String(data: data, encoding: .utf8) {
+                    print("[AdBlock] Loading EasyList from cache")
+                    self.processEasyListRawText(rawText)
+                    return
+                }
+
+                // 3) Download from remote sources
+                self.tryDownloadEasyList(urlIndex: 0, attempt: 0)
             }
         }
-        
-        // Try each URL with retry
-        tryDownloadEasyList(urlIndex: 0, attempt: 0)
     }
-    
-    private func tryDownloadEasyList(urlIndex: Int, attempt: Int) {
-        guard urlIndex < easyListURLs.count else {
-            print("[AdBlock] ⚠️ All EasyList sources failed — embedded rules are sufficient")
+
+    private func loadCompiledEasyListFromStore(completion: @escaping (Bool) -> Void) {
+        let chunkCount = UserDefaults.standard.integer(forKey: easyListChunkCountKey)
+        guard chunkCount > 0 else {
+            completion(false)
             return
         }
-        
+
+        let store = WKContentRuleListStore.default()
+        let group = DispatchGroup()
+        var loadedByIndex: [Int: WKContentRuleList] = [:]
+        let lock = NSLock()
+
+        for i in 0..<chunkCount {
+            group.enter()
+            store?.lookupContentRuleList(forIdentifier: "\(easyListIdentifierPrefix)\(i)") { ruleList, _ in
+                if let ruleList = ruleList {
+                    lock.lock()
+                    loadedByIndex[i] = ruleList
+                    lock.unlock()
+                }
+                group.leave()
+            }
+        }
+
+        group.notify(queue: .main) { [weak self] in
+            guard let self = self else { return }
+            let ordered = loadedByIndex.keys.sorted().compactMap { loadedByIndex[$0] }
+            guard ordered.count == chunkCount else {
+                UserDefaults.standard.removeObject(forKey: self.easyListChunkCountKey)
+                UserDefaults.standard.removeObject(forKey: self.easyListRuleCountKey)
+                completion(false)
+                return
+            }
+
+            self.compiledRuleLists.append(contentsOf: ordered)
+            let storedRuleCount = UserDefaults.standard.integer(forKey: self.easyListRuleCountKey)
+            self.easyListActiveRuleCount = storedRuleCount
+            self.updateFilterInfo()
+            print("[AdBlock] Loaded EasyList from compiled cache (\(ordered.count) chunks)")
+            NotificationCenter.default.post(name: .adBlockRulesUpdated, object: nil)
+            completion(true)
+        }
+    }
+
+    private func processEasyListRawText(_ rawText: String, completion: ((Bool) -> Void)? = nil) {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
+            let trimmed = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else {
+                DispatchQueue.main.async { completion?(false) }
+                return
+            }
+
+            if trimmed.hasPrefix("[") {
+                if let cacheURL = self.getCacheFileURL(),
+                   let data = trimmed.data(using: .utf8) {
+                    try? data.write(to: cacheURL)
+                }
+                self.compileDownloadedRules(trimmed) { success in
+                    completion?(success)
+                }
+                return
+            }
+
+            let parsedRules = EasyListParser.parse(trimmed, maxRules: self.maxRulesPerChunk)
+            guard !parsedRules.isEmpty, let parsedJSON = EasyListParser.toJSON(parsedRules) else {
+                print("[AdBlock] EasyList parse failed or produced no rules")
+                DispatchQueue.main.async { completion?(false) }
+                return
+            }
+
+            if let cacheURL = self.getCacheFileURL(),
+               let data = parsedJSON.data(using: .utf8) {
+                try? data.write(to: cacheURL)
+                print("[AdBlock] Cached parsed EasyList (\(parsedRules.count) rules)")
+            }
+
+            self.compileDownloadedRules(parsedJSON) { success in
+                completion?(success)
+            }
+        }
+    }
+
+    private func tryDownloadEasyList(urlIndex: Int, attempt: Int) {
+        guard urlIndex < easyListURLs.count else {
+            print("[AdBlock] All EasyList sources failed - embedded rules are sufficient")
+            return
+        }
+
         guard let url = URL(string: easyListURLs[urlIndex]) else {
             tryDownloadEasyList(urlIndex: urlIndex + 1, attempt: 0)
             return
         }
-        
-        print("[AdBlock] ⬇️ Downloading EasyList (source \(urlIndex + 1)/\(easyListURLs.count), attempt \(attempt + 1))...")
-        
+
+        print("[AdBlock] Downloading EasyList (source \(urlIndex + 1)/\(easyListURLs.count), attempt \(attempt + 1))...")
+
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 30
         config.timeoutIntervalForResource = 60
         let session = URLSession(configuration: config)
-        
+
         session.dataTask(with: url) { [weak self] data, response, error in
             guard let self = self else { return }
-            
-            // Check for valid response
-            if let data = data, error == nil,
+
+            if let data = data,
+               error == nil,
                let httpResponse = response as? HTTPURLResponse,
                httpResponse.statusCode == 200,
-               let json = String(data: data, encoding: .utf8),
-               json.contains("trigger") || json.contains("url-filter") {
-                
-                // Cache successfully
-                if let cacheURL = self.getCacheFileURL() {
-                    try? data.write(to: cacheURL)
-                    print("[AdBlock] 💾 Cached EasyList (\(data.count / 1024)KB)")
+               let rawText = String(data: data, encoding: .utf8) {
+                self.processEasyListRawText(rawText) { success in
+                    guard !success else { return }
+                    self.tryDownloadEasyList(urlIndex: urlIndex + 1, attempt: 0)
                 }
-                
-                self.compileDownloadedRules(json)
                 return
             }
-            
-            // Retry with exponential backoff
+
             let nextAttempt = attempt + 1
             if nextAttempt < self.maxRetryAttempts {
                 let delay = Double(nextAttempt) * 2.0
-                print("[AdBlock] 🔄 Retry in \(delay)s...")
+                print("[AdBlock] Retry in \(delay)s...")
                 DispatchQueue.global().asyncAfter(deadline: .now() + delay) {
                     self.tryDownloadEasyList(urlIndex: urlIndex, attempt: nextAttempt)
                 }
             } else {
-                // Try next URL source
-                print("[AdBlock] ❌ Source \(urlIndex + 1) failed, trying next...")
+                print("[AdBlock] Source \(urlIndex + 1) failed, trying next...")
                 self.tryDownloadEasyList(urlIndex: urlIndex + 1, attempt: 0)
             }
         }.resume()
     }
-    
+
     // MARK: - Compile Downloaded Rules
-    private func compileDownloadedRules(_ jsonString: String) {
+    private func compileDownloadedRules(_ jsonString: String, completion: ((Bool) -> Void)? = nil) {
         let trimmed = jsonString.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.hasPrefix("[") else {
-            print("[AdBlock] ⚠️ Downloaded list is not JSON rule format, skipped")
+            print("[AdBlock] Downloaded list is not JSON rule format, skipped")
+            DispatchQueue.main.async { completion?(false) }
             return
         }
-        
+
         guard let data = jsonString.data(using: .utf8),
               let allRules = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
-            print("[AdBlock] ⚠️ Downloaded JSON parse failed")
+            print("[AdBlock] Downloaded JSON parse failed")
+            DispatchQueue.main.async { completion?(false) }
             return
         }
-        
+
         let validRules = allRules.filter { rule in
             guard
                 let trigger = rule["trigger"] as? [String: Any],
@@ -289,21 +384,23 @@ class AdBlockEngine: ObservableObject {
             }
             return true
         }
-        
+
         guard !validRules.isEmpty else {
-            print("[AdBlock] ⚠️ Downloaded list has no valid rules")
+            print("[AdBlock] Downloaded list has no valid rules")
+            DispatchQueue.main.async { completion?(false) }
             return
         }
-        
+
         let totalRules = validRules.count
         let chunks = stride(from: 0, to: totalRules, by: maxRulesPerChunk).map { start in
             Array(validRules[start..<min(start + maxRulesPerChunk, totalRules)])
         }
-        
+
         let store = WKContentRuleListStore.default()
         let group = DispatchGroup()
-        var downloaded: [WKContentRuleList] = []
-        
+        var downloadedByIndex: [Int: WKContentRuleList] = [:]
+        let lock = NSLock()
+
         for (i, chunk) in chunks.enumerated() {
             group.enter()
             guard let chunkData = try? JSONSerialization.data(withJSONObject: chunk),
@@ -311,30 +408,39 @@ class AdBlockEngine: ObservableObject {
                 group.leave()
                 continue
             }
-            
-            store?.compileContentRuleList(forIdentifier: "easylist_\(i)", encodedContentRuleList: chunkJSON) { ruleList, error in
+
+            store?.compileContentRuleList(forIdentifier: "\(easyListIdentifierPrefix)\(i)", encodedContentRuleList: chunkJSON) { ruleList, error in
                 if let ruleList = ruleList {
-                    downloaded.append(ruleList)
-                    print("[AdBlock] ✅ EasyList chunk \(i): \(chunk.count) rules")
+                    lock.lock()
+                    downloadedByIndex[i] = ruleList
+                    lock.unlock()
+                    print("[AdBlock] EasyList chunk \(i): \(chunk.count) rules")
                 } else {
-                    print("[AdBlock] ❌ EasyList chunk \(i) failed: \(error?.localizedDescription ?? "")")
+                    print("[AdBlock] EasyList chunk \(i) failed: \(error?.localizedDescription ?? "")")
                 }
                 group.leave()
             }
         }
-        
+
         group.notify(queue: .main) { [weak self] in
-            guard let self = self, !downloaded.isEmpty else { return }
-            // Add downloaded rules to existing embedded rules
+            guard let self = self else { return }
+            let downloaded = downloadedByIndex.keys.sorted().compactMap { downloadedByIndex[$0] }
+            guard !downloaded.isEmpty else {
+                completion?(false)
+                return
+            }
+
             self.compiledRuleLists.append(contentsOf: downloaded)
-            self.filterInfo = "\(totalRules) kural aktif (\(self.compiledRuleLists.count) grup)"
-            print("[AdBlock] 🎯 EasyList added: \(downloaded.count) chunks → total \(self.compiledRuleLists.count) groups")
-            
-            // Post notification so WebView can re-inject
+            self.easyListActiveRuleCount = totalRules
+            UserDefaults.standard.set(totalRules, forKey: self.easyListRuleCountKey)
+            UserDefaults.standard.set(chunks.count, forKey: self.easyListChunkCountKey)
+            self.updateFilterInfo()
+            print("[AdBlock] EasyList added: \(downloaded.count) chunks")
+
             NotificationCenter.default.post(name: .adBlockRulesUpdated, object: nil)
+            completion?(true)
         }
     }
-    
     // MARK: - Apply Rules to WKUserContentController
     func applyRules(to controller: WKUserContentController) {
         // Remove old rules

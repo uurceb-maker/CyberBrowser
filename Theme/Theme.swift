@@ -3,10 +3,10 @@ import SwiftUI
 // MARK: - Cyberpunk Color Palette
 extension Color {
     /// Pure black background — #000000
-    static let cyberBlack = Color(red: 0, green: 0, blue: 0)
+    static let cyberBlack = Color(red: 5/255, green: 8/255, blue: 16/255)
     
     /// Accent yellow — #FACC15
-    static let cyberYellow = Color(red: 250/255, green: 204/255, blue: 21/255)
+    static let cyberYellow = Color(red: 34/255, green: 211/255, blue: 238/255)
     
     /// Pure white for text
     static let cyberWhite = Color.white
@@ -27,7 +27,7 @@ extension Color {
     static let cyberGreen = Color(red: 34/255, green: 197/255, blue: 94/255)
     
     /// Yellow with glow opacity
-    static let cyberYellowGlow = Color(red: 250/255, green: 204/255, blue: 21/255).opacity(0.3)
+    static let cyberYellowGlow = Color(red: 34/255, green: 211/255, blue: 238/255).opacity(0.28)
 }
 
 // MARK: - UIColor Extension for Hex
@@ -56,13 +56,15 @@ extension UIColor {
 
 // MARK: - Design Constants
 enum CyberTheme {
-    static let cornerRadius: CGFloat = 12
+    static let cornerRadius: CGFloat = 22
     static let smallCornerRadius: CGFloat = 8
     static let padding: CGFloat = 16
     static let smallPadding: CGFloat = 8
     static let iconSize: CGFloat = 22
     static let navBarHeight: CGFloat = 56
     static let addressBarHeight: CGFloat = 44
+    static let bodyFont: Font = .system(.body, design: .rounded)
+    static let glassMaterial: Material = .regular
     
     // Glow effect
     static func yellowGlow(radius: CGFloat = 10) -> some View {
@@ -97,12 +99,15 @@ struct CyberPrimaryButtonStyle: ButtonStyle {
 struct CyberCardModifier: ViewModifier {
     func body(content: Content) -> some View {
         content
-            .background(Color.cyberSurface)
-            .cornerRadius(CyberTheme.cornerRadius)
-            .overlay(
-                RoundedRectangle(cornerRadius: CyberTheme.cornerRadius)
-                    .stroke(Color.cyberYellow.opacity(0.2), lineWidth: 1)
+            .background(
+                .regularMaterial,
+                in: RoundedRectangle(cornerRadius: CyberTheme.cornerRadius, style: .continuous)
             )
+            .overlay(
+                RoundedRectangle(cornerRadius: CyberTheme.cornerRadius, style: .continuous)
+                    .stroke(Color.cyberYellow.opacity(0.22), lineWidth: 0.8)
+            )
+            .shadow(color: Color.cyberYellow.opacity(0.15), radius: 20, x: 0, y: 8)
     }
 }
 

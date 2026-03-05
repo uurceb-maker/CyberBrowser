@@ -4,220 +4,177 @@ import SwiftUI
 struct TabManagerView: View {
     @EnvironmentObject var tabManager: TabManager
     @Environment(\.dismiss) var dismiss
-    
-    // Callbacks for tab selection and new tab
+
     var onTabSelected: ((URL) -> Void)?
     var onNewTab: ((URL) -> Void)?
-    
-    let columns = [
-        GridItem(.flexible(), spacing: 12),
-        GridItem(.flexible(), spacing: 12)
-    ]
-    
+
+    @State private var searchText: String = ""
+
+    private var filteredTabs: [BrowserTab] {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !query.isEmpty else { return tabManager.tabs }
+        return tabManager.tabs.filter { tab in
+            tab.title.lowercased().contains(query) || tab.url.absoluteString.lowercased().contains(query)
+        }
+    }
+
     var body: some View {
         ZStack {
-            // Background
-            Color.cyberBlack.ignoresSafeArea()
-            
-            VStack(spacing: 0) {
-                // Header
+            LinearGradient(
+                colors: [Color.black.opacity(0.9), Color.cyberBlack.opacity(0.75)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .ignoresSafeArea()
+
+            VStack(spacing: 12) {
                 HStack {
                     Text("Sekmeler")
-                        .font(.system(size: 24, weight: .bold))
+                        .font(.system(size: 28, weight: .bold, design: .rounded))
                         .foregroundColor(.cyberWhite)
-                    
+
                     Spacer()
-                    
-                    // Tab count
-                    Text("\(tabManager.tabs.count)")
-                        .font(.system(size: 14, weight: .bold, design: .monospaced))
-                        .foregroundColor(.black)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 4)
-                        .background(Color.cyberYellow)
-                        .cornerRadius(12)
-                    
-                    Spacer().frame(width: 12)
-                    
-                    // Done button
-                    Button("Tamam") {
-                        dismiss()
-                    }
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundColor(.cyberYellow)
+
+                    Button("Tamam") { dismiss() }
+                        .font(.system(size: 16, weight: .semibold, design: .rounded))
+                        .foregroundColor(.cyberYellow)
                 }
-                .padding(.horizontal, CyberTheme.padding)
-                .padding(.top, 20)
-                .padding(.bottom, 16)
-                
-                // Tab Grid
+                .padding(.horizontal, 20)
+                .padding(.top, 14)
+
+                HStack(spacing: 10) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "magnifyingglass")
+                            .foregroundColor(.cyberMuted)
+                        TextField("Sekmelerde ara...", text: $searchText)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 15, weight: .medium, design: .rounded))
+                            .foregroundColor(.cyberWhite)
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                    .background(.ultraThinMaterial, in: Capsule())
+                    .overlay(
+                        Capsule().stroke(Color.cyberYellow.opacity(0.2), lineWidth: 0.8)
+                    )
+
+                    Button {
+                        let newTabURL = URL(string: "https://www.google.com")!
+                        tabManager.addTab(url: newTabURL)
+                        onNewTab?(newTabURL)
+                        dismiss()
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "plus")
+                            Text("Yeni")
+                                .font(.system(size: 14, weight: .bold, design: .rounded))
+                        }
+                        .foregroundColor(.black)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                        .background(Color.cyberYellow, in: Capsule())
+                    }
+                }
+                .padding(.horizontal, 20)
+
                 ScrollView {
-                    LazyVGrid(columns: columns, spacing: 12) {
-                        ForEach(tabManager.tabs) { tab in
-                            TabCard(
+                    LazyVStack(spacing: 10) {
+                        ForEach(filteredTabs) { tab in
+                            TabRow(
                                 tab: tab,
-                                isActive: tab.id == tabManager.activeTab.id,
-                                onTap: {
-                                    tabManager.switchTab(id: tab.id)
-                                    onTabSelected?(tab.url)
-                                    dismiss()
-                                },
-                                onClose: {
-                                    withAnimation(.spring(response: 0.3)) {
+                                isActive: tab.id == tabManager.activeTab.id
+                            ) {
+                                tabManager.switchTab(id: tab.id)
+                                onTabSelected?(tab.url)
+                                dismiss()
+                            }
+                            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                                Button(role: .destructive) {
+                                    withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
                                         tabManager.closeTab(id: tab.id)
                                     }
+                                } label: {
+                                    Label("Kapat", systemImage: "xmark")
                                 }
-                            )
+                            }
                         }
                     }
-                    .padding(.horizontal, CyberTheme.padding)
-                    .padding(.bottom, 100)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 4)
                 }
-                
-                Spacer()
-            }
-            
-            // New Tab FAB
-            VStack {
-                Spacer()
-                
-                Button(action: {
-                    let newTabURL = URL(string: "https://www.google.com")!
-                    tabManager.addTab(url: newTabURL)
-                    onNewTab?(newTabURL)
-                    dismiss()
-                }) {
-                    HStack(spacing: 8) {
-                        Image(systemName: "plus")
-                            .font(.system(size: 18, weight: .bold))
-                        Text("Yeni Sekme")
-                            .font(.system(size: 16, weight: .bold))
-                    }
-                    .foregroundColor(.black)
-                    .padding(.horizontal, 24)
-                    .padding(.vertical, 14)
-                    .background(
-                        Capsule()
-                            .fill(Color.cyberYellow)
-                            .shadow(color: .cyberYellow.opacity(0.4), radius: 15, y: 5)
-                    )
-                }
-                .padding(.bottom, 30)
             }
         }
     }
 }
 
-// MARK: - Tab Card
-struct TabCard: View {
+struct TabRow: View {
     let tab: BrowserTab
     let isActive: Bool
     let onTap: () -> Void
-    let onClose: () -> Void
-    
+
     var body: some View {
         Button(action: onTap) {
-            VStack(spacing: 0) {
-                // Snapshot preview
-                ZStack {
+            HStack(spacing: 12) {
+                Group {
                     if let snapshot = tab.snapshot {
                         Image(uiImage: snapshot)
                             .resizable()
-                            .aspectRatio(contentMode: .fill)
-                            .frame(height: 140)
-                            .clipped()
+                            .scaledToFill()
                     } else {
-                        Rectangle()
-                            .fill(
-                                LinearGradient(
-                                    colors: [Color.cyberSurface, Color.cyberBlack],
-                                    startPoint: .top,
-                                    endPoint: .bottom
-                                )
-                            )
-                            .frame(height: 140)
-                            .overlay(
-                                Image(systemName: "globe")
-                                    .font(.system(size: 30))
-                                    .foregroundColor(.cyberMuted)
-                            )
-                    }
-                    
-                    // Close button overlay
-                    VStack {
-                        HStack {
-                            Spacer()
-                            Button(action: onClose) {
-                                Image(systemName: "xmark")
-                                    .font(.system(size: 10, weight: .bold))
-                                    .foregroundColor(.cyberWhite)
-                                    .padding(6)
-                                    .background(
-                                        Circle()
-                                            .fill(Color.black.opacity(0.7))
-                                    )
-                            }
-                            .padding(6)
-                        }
-                        Spacer()
-                    }
-                    
-                    // Ad blocked badge
-                    if tab.blockedAdsCount > 0 {
-                        VStack {
-                            Spacer()
-                            HStack {
-                                HStack(spacing: 3) {
-                                    Image(systemName: "shield.checkered")
-                                        .font(.system(size: 9))
-                                    Text("\(tab.blockedAdsCount)")
-                                        .font(.system(size: 9, weight: .bold, design: .monospaced))
-                                }
-                                .foregroundColor(.black)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 3)
-                                .background(Color.cyberYellow)
-                                .cornerRadius(4)
-                                .padding(6)
-                                
-                                Spacer()
-                            }
-                        }
+                        LinearGradient(
+                            colors: [Color.cyberSurface.opacity(0.8), Color.cyberBlack.opacity(0.9)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                        .overlay(
+                            Image(systemName: "globe")
+                                .foregroundColor(.cyberMuted)
+                        )
                     }
                 }
-                .frame(height: 140)
-                
-                // Title bar
-                HStack(spacing: 6) {
-                    // Security indicator
-                    Image(systemName: tab.isSecure ? "lock.fill" : "lock.open.fill")
-                        .font(.system(size: 10))
-                        .foregroundColor(tab.isSecure ? .cyberGreen : .cyberRed)
-                    
-                    Text(tab.title)
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundColor(.cyberWhite)
+                .frame(width: 58, height: 72)
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 6) {
+                        Image(systemName: tab.isSecure ? "lock.shield.fill" : "lock.open.fill")
+                            .font(.system(size: 10))
+                            .foregroundColor(tab.isSecure ? .cyberGreen : .cyberRed)
+
+                        Text(tab.title)
+                            .font(.system(size: 15, weight: .semibold, design: .rounded))
+                            .foregroundColor(.cyberWhite)
+                            .lineLimit(1)
+                    }
+
+                    Text(tab.url.host ?? tab.url.absoluteString)
+                        .font(.system(size: 12, weight: .medium, design: .rounded))
+                        .foregroundColor(.cyberMuted)
                         .lineLimit(1)
-                        .truncationMode(.tail)
-                    
-                    Spacer()
+
+                    if tab.blockedAdsCount > 0 {
+                        Text("\(tab.blockedAdsCount) reklam engellendi")
+                            .font(.system(size: 11, weight: .bold, design: .rounded))
+                            .foregroundColor(.cyberYellow)
+                    }
                 }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 8)
-                .background(Color.cyberSurface)
+
+                Spacer()
+
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(.cyberMuted)
             }
-            .cornerRadius(CyberTheme.cornerRadius)
+            .padding(10)
+            .background(
+                .thinMaterial,
+                in: RoundedRectangle(cornerRadius: 18, style: .continuous)
+            )
             .overlay(
-                RoundedRectangle(cornerRadius: CyberTheme.cornerRadius)
-                    .stroke(
-                        isActive ? Color.cyberYellow : Color.cyberYellow.opacity(0.15),
-                        lineWidth: isActive ? 2 : 0.5
-                    )
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .stroke(isActive ? Color.cyberYellow.opacity(0.85) : Color.cyberYellow.opacity(0.2), lineWidth: isActive ? 1.2 : 0.8)
             )
-            .shadow(
-                color: isActive ? .cyberYellow.opacity(0.2) : .clear,
-                radius: 8
-            )
+            .shadow(color: isActive ? Color.cyberYellow.opacity(0.15) : .clear, radius: 10, x: 0, y: 4)
         }
         .buttonStyle(.plain)
     }

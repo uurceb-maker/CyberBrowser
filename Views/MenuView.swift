@@ -1,18 +1,27 @@
 import SwiftUI
+import WebKit
 
 // MARK: - Menu View
 struct MenuView: View {
     @EnvironmentObject var adBlockEngine: AdBlockEngine
     @EnvironmentObject var extensionManager: ExtensionManager
     @EnvironmentObject var tabManager: TabManager
+    @EnvironmentObject var proxyManager: ProxyManager
     @Environment(\.dismiss) var dismiss
     
     @State private var showExtensions: Bool = false
+    @State private var showInlineProxySettings: Bool = false
+    @State private var showProxySettingsSheet: Bool = false
     @State private var showClearConfirm: Bool = false
     
     var body: some View {
         ZStack {
-            Color.cyberBlack.ignoresSafeArea()
+            LinearGradient(
+                colors: [Color.black.opacity(0.9), Color.cyberBlack.opacity(0.85)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .ignoresSafeArea()
             
             VStack(spacing: 0) {
                 // Drag handle
@@ -58,6 +67,43 @@ struct MenuView: View {
                                 badge: "\(extensionManager.extensions.count)"
                             ) {
                                 showExtensions = true
+                            }
+
+                            Divider().background(Color.cyberDivider)
+
+                            MenuActionRow(
+                                icon: "network",
+                                iconColor: .cyberYellow,
+                                title: "Proxy Ayarlari",
+                                subtitle: proxyManager.connectionStatus
+                            ) {
+                                withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) {
+                                    showInlineProxySettings.toggle()
+                                }
+                            }
+
+                            if showInlineProxySettings {
+                                Divider().background(Color.cyberDivider)
+
+                                InlineProxyPanel()
+                                    .environmentObject(proxyManager)
+                                    .transition(
+                                        .asymmetric(
+                                            insertion: .push(from: .bottom).combined(with: .opacity),
+                                            removal: .push(from: .top).combined(with: .opacity)
+                                        )
+                                    )
+
+                                Divider().background(Color.cyberDivider)
+
+                                MenuActionRow(
+                                    icon: "slider.horizontal.3",
+                                    iconColor: .cyberYellow,
+                                    title: "Gelismis Proxy",
+                                    subtitle: "Sunucu ayarlari ve link import"
+                                ) {
+                                    showProxySettingsSheet = true
+                                }
                             }
                         }
                         .cyberCard()
@@ -153,6 +199,12 @@ struct MenuView: View {
             ExtensionsView()
                 .environmentObject(extensionManager)
         }
+        .sheet(isPresented: $showProxySettingsSheet) {
+            NavigationStack {
+                ProxySettingsView()
+                    .environmentObject(proxyManager)
+            }
+        }
         .confirmationDialog(
             "Tüm tarayıcı verileri silinecek",
             isPresented: $showClearConfirm,
@@ -181,8 +233,6 @@ struct MenuView: View {
         adBlockEngine.lastBlockedDomain = ""
     }
 }
-
-import WebKit
 
 // MARK: - Menu Components
 struct SectionHeader: View {
@@ -315,6 +365,55 @@ struct MenuInfoRow: View {
                     .font(.system(size: 9, weight: .bold, design: .monospaced))
                     .foregroundColor(statusColor)
             }
+        }
+        .padding(12)
+    }
+}
+
+struct InlineProxyPanel: View {
+    @EnvironmentObject var proxyManager: ProxyManager
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Label("Proxy", systemImage: "globe")
+                    .font(.system(size: 13, weight: .semibold, design: .rounded))
+                    .foregroundColor(.cyberWhite)
+
+                Spacer()
+
+                Text(proxyManager.isConnected ? "Aktif" : "Kapali")
+                    .font(.system(size: 11, weight: .bold, design: .rounded))
+                    .foregroundColor(proxyManager.isConnected ? .cyberGreen : .cyberMuted)
+            }
+
+            Picker("Protokol", selection: $proxyManager.selectedProtocol) {
+                ForEach(ProxyManager.ProxyProtocol.allCases, id: \.self) { proto in
+                    Text(proto.rawValue).tag(proto)
+                }
+            }
+            .pickerStyle(.menu)
+            .tint(.cyberYellow)
+
+            Text(proxyManager.connectionStatus)
+                .font(.system(size: 11, weight: .medium, design: .rounded))
+                .foregroundColor(.cyberMuted)
+                .lineLimit(2)
+
+            Button(proxyManager.isConnected ? "Baglantiyi Kes" : "Baglan") {
+                Task {
+                    if proxyManager.isConnected {
+                        proxyManager.stopProxy()
+                    } else {
+                        await proxyManager.startProxy()
+                    }
+                }
+            }
+            .font(.system(size: 13, weight: .bold, design: .rounded))
+            .foregroundColor(.black)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(Color.cyberYellow, in: Capsule())
         }
         .padding(12)
     }

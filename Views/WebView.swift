@@ -29,6 +29,7 @@ class WebViewStore: ObservableObject {
     weak var adBlockEngine: AdBlockEngine?
     weak var tabManager: TabManager?
     weak var extensionManager: ExtensionManager?
+    weak var proxyManager: ProxyManager?
     
     private var isNavigatingProgrammatically = false
     
@@ -68,7 +69,11 @@ class WebViewStore: ObservableObject {
         contentController.add(coordinator, name: "adBlocked")
         contentController.add(coordinator, name: "extensionAction")
         config.userContentController = contentController
-        config.websiteDataStore = .default()
+        if let pm = proxyManager, pm.selectedProtocol != .direct {
+            config.websiteDataStore = pm.createProxyDataStore()
+        } else {
+            config.websiteDataStore = .default()
+        }
         
         let wv = WKWebView(frame: .zero, configuration: config)
         wv.navigationDelegate = coordinator
@@ -116,6 +121,17 @@ class WebViewStore: ObservableObject {
             self?.injectScripts()
             completion()
         }
+    }
+
+    func reconnectWithProxy() {
+        let config = webView.configuration
+        if let pm = proxyManager, pm.selectedProtocol != .direct {
+            config.websiteDataStore = pm.createProxyDataStore()
+        } else {
+            config.websiteDataStore = .default()
+        }
+        injectScripts()
+        reload()
     }
     
     // MARK: - Navigation Actions

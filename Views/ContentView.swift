@@ -5,8 +5,10 @@ struct ContentView: View {
     @EnvironmentObject var tabManager: TabManager
     @EnvironmentObject var adBlockEngine: AdBlockEngine
     @EnvironmentObject var extensionManager: ExtensionManager
+    @EnvironmentObject var proxyManager: ProxyManager
     
     @StateObject private var webViewStore = WebViewStore()
+    @StateObject private var aiAssistant = AIAssistant()
     
     @State private var showMenu: Bool = false
     @State private var showTabManager: Bool = false
@@ -15,28 +17,43 @@ struct ContentView: View {
     
     var body: some View {
         ZStack {
-            Color.cyberBlack.ignoresSafeArea()
-            
+            WebViewContainer(store: webViewStore)
+                .ignoresSafeArea()
+
+            VStack(spacing: 0) {
+                LinearGradient(
+                    colors: [Color.black.opacity(0.28), .clear],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .frame(height: 88)
+                .allowsHitTesting(false)
+
+                Spacer()
+
+                LinearGradient(
+                    colors: [.clear, Color.black.opacity(0.35)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .frame(height: 128)
+                .allowsHitTesting(false)
+            }
+            .ignoresSafeArea()
+
             VStack(spacing: 0) {
                 AddressBar(
                     urlString: $displayURL,
                     isSecure: $webViewStore.isSecure,
                     isLoading: $webViewStore.isLoading,
+                    proxyConnected: proxyManager.isConnected && proxyManager.selectedProtocol != .direct,
                     onCommit: { input in
                         webViewStore.loadURLString(input)
                     }
                 )
-                
-                if webViewStore.isLoading {
-                    ProgressView()
-                        .progressViewStyle(.linear)
-                        .tint(.cyberYellow)
-                        .frame(height: 2)
-                        .padding(.horizontal, CyberTheme.padding)
-                }
-                
-                WebViewContainer(store: webViewStore)
-                
+
+                Spacer(minLength: 0)
+
                 BottomNavBar(
                     canGoBack: webViewStore.canGoBack,
                     canGoForward: webViewStore.canGoForward,
@@ -64,7 +81,12 @@ struct ContentView: View {
                     onMenu: { showMenu = true }
                 )
             }
+
+            AIOverlayView(assistant: aiAssistant, webView: webViewStore.webView)
+                .padding(.trailing, 18)
+                .padding(.bottom, 104)
         }
+        .background(.clear)
         .statusBarHidden(false)
         .onAppear {
             guard !isInitialized else { return }
@@ -73,6 +95,7 @@ struct ContentView: View {
             webViewStore.adBlockEngine = adBlockEngine
             webViewStore.tabManager = tabManager
             webViewStore.extensionManager = extensionManager
+            webViewStore.proxyManager = proxyManager
             
             webViewStore.compileAdBlockRules {
                 webViewStore.injectScripts()
@@ -95,6 +118,14 @@ struct ContentView: View {
                 }
             }
         }
+        .onChange(of: proxyManager.selectedProtocol) { _, _ in
+            guard isInitialized else { return }
+            webViewStore.reconnectWithProxy()
+        }
+        .onChange(of: proxyManager.isConnected) { _, _ in
+            guard isInitialized else { return }
+            webViewStore.reconnectWithProxy()
+        }
         .fullScreenCover(isPresented: $showTabManager) {
             TabManagerView(
                 onTabSelected: { url in
@@ -113,6 +144,7 @@ struct ContentView: View {
                 .environmentObject(adBlockEngine)
                 .environmentObject(extensionManager)
                 .environmentObject(tabManager)
+                .environmentObject(proxyManager)
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.hidden)
         }
@@ -125,4 +157,5 @@ struct ContentView: View {
         .environmentObject(TabManager())
         .environmentObject(AdBlockEngine())
         .environmentObject(ExtensionManager())
+        .environmentObject(ProxyManager())
 }
