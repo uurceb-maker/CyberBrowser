@@ -11,6 +11,7 @@ enum WebNavigationAction {
 }
 
 // MARK: - WebView Store (Manages WKWebView lifecycle)
+@MainActor
 class WebViewStore: ObservableObject {
     @Published var canGoBack: Bool = false
     @Published var canGoForward: Bool = false
@@ -20,7 +21,7 @@ class WebViewStore: ObservableObject {
     @Published var currentURLString: String = "https://www.google.com"
     let homeURL = URL(string: "https://www.google.com")!
     
-    // The WKWebView instance — created once, reused
+    // The WKWebView instance â€” created once, reused
     private(set) var webView: WKWebView!
     private var coordinator: WebViewCoordinator!
     private var refreshControl: UIRefreshControl?
@@ -33,7 +34,7 @@ class WebViewStore: ObservableObject {
     
     private var isNavigatingProgrammatically = false
     
-    // Snapshot throttling — only take snapshots every 5 seconds max
+    // Snapshot throttling â€” only take snapshots every 5 seconds max
     private var lastSnapshotTime: TimeInterval = 0
     private let snapshotMinInterval: TimeInterval = 5.0
     
@@ -47,8 +48,10 @@ class WebViewStore: ObservableObject {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            print("[WebView] 🔄 EasyList downloaded — re-injecting rules")
-            self?.injectScripts()
+            print("[WebView] ğŸ”„ EasyList downloaded â€” re-injecting rules")
+            Task { @MainActor [weak self] in
+                self?.injectScripts()
+            }
         }
     }
     
@@ -83,7 +86,7 @@ class WebViewStore: ObservableObject {
         wv.backgroundColor = .black
         wv.scrollView.backgroundColor = .black
         
-        // Use standard Safari iOS user agent — NO custom suffix
+        // Use standard Safari iOS user agent â€” NO custom suffix
         // This prevents Google CAPTCHA/verification loops
         wv.customUserAgent = nil
         
@@ -106,7 +109,7 @@ class WebViewStore: ObservableObject {
             engine.applyRules(to: contentController)
         }
         
-        // Extension scripts — only inject for main frame by default
+        // Extension scripts â€” only inject for main frame by default
         if let extManager = extensionManager {
             let currentURL = webView.url ?? URL(string: "https://www.google.com")!
             for script in extManager.activeUserScripts(for: currentURL) {
@@ -118,8 +121,10 @@ class WebViewStore: ObservableObject {
     // MARK: - Compile Native Rules
     func compileAdBlockRules(completion: @escaping () -> Void) {
         adBlockEngine?.compileRules { [weak self] in
-            self?.injectScripts()
-            completion()
+            Task { @MainActor [weak self] in
+                self?.injectScripts()
+                completion()
+            }
         }
     }
 
@@ -186,9 +191,7 @@ class WebViewStore: ObservableObject {
     @MainActor
     func stopLoading() {
         webView.stopLoading()
-        DispatchQueue.main.async { [weak self] in
-            self?.isLoading = false
-        }
+        isLoading = false
     }
     
     func goHome() {
@@ -197,77 +200,71 @@ class WebViewStore: ObservableObject {
     
     // MARK: - State Update (called by coordinator)
     func updateNavigationState() {
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
-            self.canGoBack = self.webView.canGoBack
-            self.canGoForward = self.webView.canGoForward
-        }
+        canGoBack = webView.canGoBack
+        canGoForward = webView.canGoForward
     }
     
     func handlePageFinished() {
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
-            self.isLoading = false
-            self.refreshControl?.endRefreshing()
-            self.canGoBack = self.webView.canGoBack
-            self.canGoForward = self.webView.canGoForward
-            self.pageTitle = self.webView.title ?? "Sayfa"
-            
-            if let currentURL = self.webView.url {
-                self.currentURLString = currentURL.absoluteString
-                self.isSecure = currentURL.scheme == "https"
-                
-                // Update tab manager
-                self.tabManager?.updateActiveTab(
-                    title: self.webView.title,
-                    url: currentURL,
-                    isSecure: currentURL.scheme == "https"
-                )
-            }
-            
-            // Throttled snapshot — only take one every 5 seconds
-            let now = Date().timeIntervalSince1970
-            if now - self.lastSnapshotTime > self.snapshotMinInterval {
-                self.lastSnapshotTime = now
-                
-                // Use smaller snapshot config for memory efficiency
-                let snapshotConfig = WKSnapshotConfiguration()
-                snapshotConfig.afterScreenUpdates = false
-                
-                self.webView.takeSnapshot(with: snapshotConfig) { [weak self] image, _ in
-                    if let image = image {
-                        // Downscale for tab thumbnail (saves memory)
-                        let thumbSize = CGSize(width: 200, height: 300)
-                        UIGraphicsBeginImageContextWithOptions(thumbSize, true, 1.0)
-                        image.draw(in: CGRect(origin: .zero, size: thumbSize))
-                        let thumbnail = UIGraphicsGetImageFromCurrentImageContext()
-                        UIGraphicsEndImageContext()
-                        
-                        DispatchQueue.main.async {
-                            self?.tabManager?.updateActiveTab(snapshot: thumbnail)
-                        }
+        isLoading = false
+        refreshControl?.endRefreshing()
+        canGoBack = webView.canGoBack
+        canGoForward = webView.canGoForward
+        pageTitle = webView.title ?? "Sayfa"
+
+        if let currentURL = webView.url {
+            currentURLString = currentURL.absoluteString
+            isSecure = currentURL.scheme == "https"
+
+            // Update tab manager
+            tabManager?.updateActiveTab(
+                title: webView.title,
+                url: currentURL,
+                isSecure: currentURL.scheme == "https"
+            )
+        }
+
+        // Throttled snapshot - only take one every 5 seconds
+        let now = Date().timeIntervalSince1970
+        if now - lastSnapshotTime > snapshotMinInterval {
+            lastSnapshotTime = now
+
+            // Use smaller snapshot config for memory efficiency
+            let snapshotConfig = WKSnapshotConfiguration()
+            snapshotConfig.afterScreenUpdates = false
+
+            webView.takeSnapshot(with: snapshotConfig) { [weak self] image, _ in
+                if let image = image {
+                    // Downscale for tab thumbnail (saves memory)
+                    let thumbSize = CGSize(width: 200, height: 300)
+                    UIGraphicsBeginImageContextWithOptions(thumbSize, true, 1.0)
+                    image.draw(in: CGRect(origin: .zero, size: thumbSize))
+                    let thumbnail = UIGraphicsGetImageFromCurrentImageContext()
+                    UIGraphicsEndImageContext()
+
+                    Task { @MainActor [weak self] in
+                        self?.tabManager?.updateActiveTab(snapshot: thumbnail)
                     }
                 }
             }
-
-            // Re-inject cosmetic scripts for SPA navigation
-            self.webView.evaluateJavaScript("""
-                if (window.__cyberAdBlockInjected) {
-                    window.__cyberAdBlockInjected = false;
-                }
-                if (window.__cyberTRv2) {
-                    window.__cyberTRv2 = false;
-                }
-            """) { _, _ in }
-
-            // Re-run ad blocking scripts on every page finish
-            if let engine = self.adBlockEngine, engine.isEnabled {
-                self.webView.evaluateJavaScript(AdBlockEngine.cosmeticFilterScript) { _, _ in }
-                self.webView.evaluateJavaScript(AdBlockEngine.turkishStreamingAdBlockScript) { _, _ in }
-            }
-            
-            self.isNavigatingProgrammatically = false
         }
+
+        // Re-inject cosmetic scripts for SPA navigation
+        webView.evaluateJavaScript("""
+            if (window.__cyberAdBlockInjected) {
+                window.__cyberAdBlockInjected = false;
+            }
+            if (window.__cyberTRv2) {
+                window.__cyberTRv2 = false;
+            }
+        """) { _, _ in }
+
+        // Re-run ad blocking scripts on every page finish
+        if let engine = adBlockEngine, engine.isEnabled {
+            webView.evaluateJavaScript(AdBlockEngine.cosmeticFilterScript) { _, _ in }
+            webView.evaluateJavaScript(AdBlockEngine.turkishStreamingAdBlockScript) { _, _ in }
+        }
+
+        isNavigatingProgrammatically = false
     }
 }
 
@@ -291,10 +288,8 @@ class WebViewCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScript
                 let count = body["count"] as? Int ?? 1
                 let urlStr = body["url"] as? String ?? ""
                 
-                DispatchQueue.main.async { [weak self] in
-                    self?.store?.adBlockEngine?.handleBlockedAd(count: count, domain: urlStr)
-                    self?.store?.tabManager?.incrementBlockedAds()
-                }
+                store?.adBlockEngine?.handleBlockedAd(count: count, domain: urlStr)
+                store?.tabManager?.incrementBlockedAds()
             }
         } else if message.name == "extensionAction" {
             if let body = message.body as? [String: Any] {
@@ -306,10 +301,8 @@ class WebViewCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScript
     
     // MARK: - WKNavigationDelegate
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
-        DispatchQueue.main.async { [weak self] in
-            self?.store?.isLoading = true
-            self?.store?.updateNavigationState()
-        }
+        store?.isLoading = true
+        store?.updateNavigationState()
     }
     
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
@@ -317,17 +310,13 @@ class WebViewCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScript
     }
     
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-        DispatchQueue.main.async { [weak self] in
-            self?.store?.isLoading = false
-            self?.store?.webView.scrollView.refreshControl?.endRefreshing()
-        }
+        store?.isLoading = false
+        store?.webView.scrollView.refreshControl?.endRefreshing()
     }
     
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-        DispatchQueue.main.async { [weak self] in
-            self?.store?.isLoading = false
-            self?.store?.webView.scrollView.refreshControl?.endRefreshing()
-        }
+        store?.isLoading = false
+        store?.webView.scrollView.refreshControl?.endRefreshing()
     }
     
     // MARK: - Navigation Policy (Layer 2: Domain blocking fallback)
@@ -340,11 +329,9 @@ class WebViewCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScript
         // Layer 2: Block ad domains at the navigation level
         if let engine = store?.adBlockEngine, engine.isEnabled {
             if engine.shouldBlockURL(url) {
-                print("[AdBlock] 🛡️ Blocked: \(url.host ?? url.absoluteString)")
-                DispatchQueue.main.async {
-                    engine.handleBlockedAd(count: 1, domain: url.host ?? "")
-                    self.store?.tabManager?.incrementBlockedAds()
-                }
+                print("[AdBlock] ğŸ›¡ï¸ Blocked: \(url.host ?? url.absoluteString)")
+                engine.handleBlockedAd(count: 1, domain: url.host ?? "")
+                store?.tabManager?.incrementBlockedAds()
                 decisionHandler(.cancel)
                 return
             }
@@ -357,11 +344,9 @@ class WebViewCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScript
                currentHost != host {
                 let isGambling = gamblingPatterns.contains(where: { host.contains($0) })
                 if isGambling {
-                    print("[AdBlock] 🎰 Gambling redirect blocked: \(host)")
-                    DispatchQueue.main.async {
-                        self.store?.adBlockEngine?.handleBlockedAd(count: 1, domain: host)
-                        self.store?.tabManager?.incrementBlockedAds()
-                    }
+                    print("[AdBlock] ğŸ° Gambling redirect blocked: \(host)")
+                    store?.adBlockEngine?.handleBlockedAd(count: 1, domain: host)
+                    store?.tabManager?.incrementBlockedAds()
                     decisionHandler(.cancel)
                     return
                 }
@@ -375,7 +360,7 @@ class WebViewCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScript
                 let gamblingPatterns = ["bet", "casino", "bahis", "slot", "jackpot", "spin", "bonus"]
                 let isGambling = gamblingPatterns.contains(where: { host.contains($0) })
                 if isGambling {
-                    print("[AdBlock] 🎰 Popup to gambling site blocked: \(host)")
+                    print("[AdBlock] ğŸ° Popup to gambling site blocked: \(host)")
                     decisionHandler(.cancel)
                     return
                 }
@@ -402,11 +387,9 @@ class WebViewCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScript
            engine.isEnabled,
            !navigationResponse.isForMainFrame,
            engine.shouldBlockURL(url) {
-            print("[AdBlock] 🛡️ Response blocked: \(url.host ?? "")")
-            DispatchQueue.main.async {
-                engine.handleBlockedAd(count: 1, domain: url.host ?? "")
-                self.store?.tabManager?.incrementBlockedAds()
-            }
+            print("[AdBlock] ğŸ›¡ï¸ Response blocked: \(url.host ?? "")")
+            engine.handleBlockedAd(count: 1, domain: url.host ?? "")
+            store?.tabManager?.incrementBlockedAds()
             decisionHandler(.cancel)
             return
         }
@@ -420,7 +403,7 @@ class WebViewCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScript
            let host = url.host?.lowercased() {
             let gamblingPatterns = ["bet", "casino", "bahis", "slot", "jackpot", "spin", "bonus", "poker"]
             if gamblingPatterns.contains(where: { host.contains($0) }) {
-                print("[AdBlock] 🎰 Popup blocked: \(host)")
+                print("[AdBlock] ğŸ° Popup blocked: \(host)")
                 return nil
             }
         }
@@ -442,6 +425,7 @@ class WebViewCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScript
 }
 
 // MARK: - WebView SwiftUI Wrapper
+@MainActor
 struct WebViewContainer: UIViewRepresentable {
     @ObservedObject var store: WebViewStore
     
@@ -450,6 +434,6 @@ struct WebViewContainer: UIViewRepresentable {
     }
     
     func updateUIView(_ webView: WKWebView, context: Context) {
-        // Nothing to do here — all navigation is handled imperatively via WebViewStore
+        // Nothing to do here â€” all navigation is handled imperatively via WebViewStore
     }
 }
