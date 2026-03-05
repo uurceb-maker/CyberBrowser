@@ -1125,8 +1125,8 @@ class AdBlockEngine: ObservableObject {
                 var el = clickables[i];
                 var t = (el.textContent || '').trim().toLowerCase();
                 // Match "Reklamı Geç", "Reklamı Geç (3)", "REKLAMI GEÇ", etc.
-                if (/reklam[ıi]\s*(geç|gec|kapat)/i.test(t) ||
-                    /skip\s*ad/i.test(t) ||
+                if (/reklam[ıi]\\s*(geç|gec|kapat)/i.test(t) ||
+                    /skip\\s*ad/i.test(t) ||
                     (t === 'geç' || t === 'gec' || t === 'skip' || t === 'kapat' || t === 'x')) {
                     // Only click if it's a small element (button-like)
                     var r = el.getBoundingClientRect();
