@@ -69,11 +69,25 @@ class AdBlockEngine: ObservableObject {
         "trustarc.com", "onetrust.com",
         // Additional Networks
         "adhigh.net", "adroll.com",
-        "tradedoubler.com", "awin1.com", "impact.com"
+        "tradedoubler.com", "awin1.com", "impact.com",
+        // Türk Bahis/Casino Siteleri
+        "betasus.com", "grandpashabet.com", "grandpashabetgiris.com",
+        "kareasbet.com", "meritbet.com", "spinco.com", "hititbet.com",
+        "dedebet.com", "dedebet202.com", "dedebet203.com",
+        "bahiscom.com", "betpas.com", "tipobet.com", "betboo.com",
+        "bets10.com", "mobilbahis.com", "superbetin.com",
+        "casinometropol.com", "tempobet.com", "youwin.com",
+        "1xbet.com", "mostbet.com", "pinup.com", "melbet.com",
+        "betkanyon.com", "dinamobet.com", "restbet.com",
+        "hovarda.com", "jasminbet.com", "imajbet.com",
+        "mariobet.com", "sahabet.com", "matbet.com",
+        "pusulabet.com", "hiltonbet.com", "jojobet.com"
     ]
     private let blockedPathKeywords: Set<String> = [
         "/adserver", "/doubleclick", "/googlesyndication", "/pagead",
-        "/reklam", "/sponsor", "/promo", "/banner", "/bonus", "/casino", "/bahis", "/bet"
+        "/reklam", "/sponsor", "/promo", "/banner", "/bonus", "/casino", "/bahis", "/bet",
+        "/bahis-", "/casino-", "/slot-", "/canli-bahis", "/deneme-bonusu",
+        "/kayip-bonusu", "/hosgeldin-bonusu", "/uye-ol"
     ]
     
     // MARK: - EasyList Download Config
@@ -358,6 +372,14 @@ class AdBlockEngine: ObservableObject {
             forMainFrameOnly: false
         )
         controller.addUserScript(cosmeticScript)
+
+        // Turkish streaming site ad block (runs in ALL frames at document END)
+        let trScript = WKUserScript(
+            source: Self.turkishStreamingAdBlockScript,
+            injectionTime: .atDocumentEnd,
+            forMainFrameOnly: false
+        )
+        controller.addUserScript(trScript)
         
         // Cookie consent auto-dismiss
         let cookieScript = WKUserScript(
@@ -959,6 +981,284 @@ class AdBlockEngine: ObservableObject {
             Object.defineProperty(navigator, 'hardwareConcurrency', { get: function() { return 4; } });
             Object.defineProperty(navigator, 'deviceMemory', { get: function() { return 8; } });
         } catch(e) {}
+    })();
+    """
+
+    // MARK: - Turkish Streaming Site Ad Block Script v2
+    static let turkishStreamingAdBlockScript: String = """
+    (function() {
+        'use strict';
+        if (window.__cyberTRv2) return;
+        window.__cyberTRv2 = true;
+
+        // === BLOCKED DOMAIN PATTERNS (catches image-only banners via link href) ===
+        var blockedDomainPatterns = [
+            'bet', 'casino', 'bahis', 'slot', 'jackpot', 'poker',
+            'rulet', 'tombala', 'blackjack', 'baccarat'
+        ];
+        var blockedDomains = [
+            'betasus', 'grandpashabet', 'kareasbet', 'meritbet', 'spinco',
+            'hititbet', 'dedebet', 'bahiscom', 'betpas', 'tipobet',
+            'bets10', 'mobilbahis', 'superbetin', 'casinometropol',
+            'jojobet', 'sahabet', 'matbet', 'pusulabet', 'hiltonbet',
+            'mariobet', 'imajbet', 'restbet', 'dinamobet', 'hovarda',
+            'betkanyon', 'jasminbet', 'youwin', 'tempobet', 'betboo',
+            '1xbet', 'mostbet', 'pinup', 'melbet', 'pinbahis',
+            'kralbet', 'cashwin', 'ngsbahis', 'fenomenbet'
+        ];
+        var blockedTextWords = [
+            'bonus', 'freespin', 'kayıp bonusu', 'kayip bonusu',
+            'deneme bonusu', 'hoşgeldin', 'hosgeldin', 'üye ol',
+            'hemen üye', 'bedava bahis', 'canlı bahis', 'canli bahis'
+        ];
+
+        function isGamblingURL(href) {
+            if (!href) return false;
+            var h = href.toLowerCase();
+            for (var i = 0; i < blockedDomains.length; i++) {
+                if (h.includes(blockedDomains[i])) return true;
+            }
+            for (var j = 0; j < blockedDomainPatterns.length; j++) {
+                // Only match in domain part, not in path of legitimate sites
+                try {
+                    var u = new URL(h, location.href);
+                    if (u.hostname && u.hostname !== location.hostname) {
+                        if (u.hostname.includes(blockedDomainPatterns[j])) return true;
+                    }
+                } catch(e) {
+                    if (h.includes(blockedDomainPatterns[j])) return true;
+                }
+            }
+            return false;
+        }
+
+        function hasGamblingText(el) {
+            var text = (el.textContent || '').toLowerCase();
+            for (var i = 0; i < blockedTextWords.length; i++) {
+                if (text.includes(blockedTextWords[i])) return true;
+            }
+            return false;
+        }
+
+        // === 1. INJECT CSS — instantly hide known ad patterns ===
+        var style = document.createElement('style');
+        style.textContent = [
+            '[class*="reklam"], [id*="reklam"] { display:none!important; height:0!important; }',
+            '[class*="adsBox"], [id*="adsBox"] { display:none!important; }',
+            '[class*="ad-overlay"], [id*="ad-overlay"] { display:none!important; }',
+            '[class*="preroll"], [id*="preroll"] { display:none!important; }',
+            '[class*="video-ad"], [id*="video-ad"] { display:none!important; }',
+            '[class*="adContainer"], [id*="adContainer"] { display:none!important; }',
+            '.reklamAlani, #reklamAlani { display:none!important; }',
+            '[class*="interstitial"] { display:none!important; }',
+            '[class*="popup-ad"], [id*="popup-ad"] { display:none!important; }'
+        ].join('\\n');
+        (document.head || document.documentElement).appendChild(style);
+
+        // === 2. NUKE ALL LINKS TO GAMBLING SITES (and their parent containers) ===
+        function nukeGamblingLinks() {
+            var allLinks = document.querySelectorAll('a[href]');
+            allLinks.forEach(function(link) {
+                var href = link.getAttribute('href') || '';
+                if (isGamblingURL(href)) {
+                    // Hide the link itself
+                    link.style.setProperty('display', 'none', 'important');
+                    // Also hide its parent container (the banner wrapper)
+                    var container = link.closest('div, section, aside, li, article, figure, td');
+                    if (container) {
+                        // Don't hide if container is too large (might be the whole page)
+                        var r = container.getBoundingClientRect();
+                        if (r.height < 800) {
+                            container.style.setProperty('display', 'none', 'important');
+                            container.style.setProperty('height', '0', 'important');
+                            container.style.setProperty('overflow', 'hidden', 'important');
+                        }
+                    }
+                }
+            });
+
+            // Also hide images whose src contains gambling domains
+            var allImgs = document.querySelectorAll('img[src]');
+            allImgs.forEach(function(img) {
+                var src = (img.getAttribute('src') || '').toLowerCase();
+                if (isGamblingURL(src)) {
+                    var container = img.closest('div, a, section, aside, li, article, figure') || img;
+                    container.style.setProperty('display', 'none', 'important');
+                }
+            });
+
+            // Hide iframes to gambling sites
+            var allIframes = document.querySelectorAll('iframe[src]');
+            allIframes.forEach(function(iframe) {
+                var src = iframe.getAttribute('src') || '';
+                if (isGamblingURL(src)) {
+                    iframe.style.setProperty('display', 'none', 'important');
+                    iframe.style.setProperty('height', '0', 'important');
+                }
+            });
+        }
+
+        // === 3. NUKE ELEMENTS WITH GAMBLING TEXT ===
+        function nukeGamblingText() {
+            var candidates = document.querySelectorAll('div, section, aside, span, p, a, li');
+            candidates.forEach(function(el) {
+                if (hasGamblingText(el)) {
+                    // Only hide if it's a reasonably sized block (not the whole page)
+                    var r = el.getBoundingClientRect();
+                    if (r.height > 20 && r.height < 600 && r.width > 50) {
+                        var container = el.closest('div, section, aside, li, article') || el;
+                        var cr = container.getBoundingClientRect();
+                        if (cr.height < 800) {
+                            container.style.setProperty('display', 'none', 'important');
+                            container.style.setProperty('height', '0', 'important');
+                        }
+                    }
+                }
+            });
+        }
+
+        // === 4. AUTO-CLICK "Reklamı Geç" / Skip buttons ===
+        function clickSkipButtons() {
+            // Direct text match on buttons and clickable elements
+            var clickables = document.querySelectorAll('button, a, span, div');
+            for (var i = 0; i < clickables.length && i < 1000; i++) {
+                var el = clickables[i];
+                var t = (el.textContent || '').trim().toLowerCase();
+                // Match "Reklamı Geç", "Reklamı Geç (3)", "REKLAMI GEÇ", etc.
+                if (/reklam[ıi]\s*(geç|gec|kapat)/i.test(t) ||
+                    /skip\s*ad/i.test(t) ||
+                    (t === 'geç' || t === 'gec' || t === 'skip' || t === 'kapat' || t === 'x')) {
+                    // Only click if it's a small element (button-like)
+                    var r = el.getBoundingClientRect();
+                    if (r.width < 300 && r.height < 100 && r.width > 10) {
+                        try { el.click(); } catch(e) {}
+                    }
+                }
+            }
+        }
+
+        // === 5. BLOCK CLICK-JACKING ===
+        document.addEventListener('click', function(e) {
+            var link = e.target.closest('a[href]');
+            if (link) {
+                var href = link.getAttribute('href') || '';
+                if (isGamblingURL(href)) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    e.stopImmediatePropagation();
+                    link.style.setProperty('display', 'none', 'important');
+                    return false;
+                }
+                // Block any external redirect that's not user-intended navigation
+                if (link.hostname && link.hostname !== location.hostname) {
+                    var targetHost = link.hostname.toLowerCase();
+                    var isDomainBlocked = blockedDomainPatterns.some(function(p) { return targetHost.includes(p); });
+                    if (isDomainBlocked) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        e.stopImmediatePropagation();
+                        return false;
+                    }
+                }
+            }
+        }, true);
+
+        // === 6. BLOCK window.open POPUPS ===
+        var origOpen = window.open;
+        window.open = function(url) {
+            if (url && isGamblingURL(String(url))) return null;
+            return origOpen.apply(this, arguments);
+        };
+
+        // === 7. NUKE VIDEO OVERLAYS ===
+        function nukeVideoOverlays() {
+            var videos = document.querySelectorAll('video');
+            videos.forEach(function(vid) {
+                // Walk up to find the player container
+                var player = vid.closest('[class*="player"], [id*="player"]') || vid.parentElement;
+                if (!player) return;
+
+                // Find ALL positioned elements on top of video
+                var allChildren = player.querySelectorAll('*');
+                allChildren.forEach(function(child) {
+                    if (child === vid || child.tagName === 'VIDEO') return;
+                    if (child.tagName === 'SOURCE' || child.tagName === 'TRACK') return;
+
+                    // If it has a gambling link, nuke it
+                    var childLinks = child.querySelectorAll('a[href]');
+                    var selfLink = child.tagName === 'A' ? child : null;
+                    var hasGambling = false;
+
+                    if (selfLink && isGamblingURL(selfLink.getAttribute('href'))) hasGambling = true;
+                    childLinks.forEach(function(cl) {
+                        if (isGamblingURL(cl.getAttribute('href'))) hasGambling = true;
+                    });
+
+                    if (hasGambling) {
+                        child.style.setProperty('display', 'none', 'important');
+                        child.style.setProperty('pointer-events', 'none', 'important');
+                        return;
+                    }
+
+                    // If it's positioned absolute/fixed and covers the video, check if it's an ad
+                    var cs = window.getComputedStyle(child);
+                    if (cs.position === 'absolute' || cs.position === 'fixed') {
+                        var r = child.getBoundingClientRect();
+                        // If it's large enough to be an overlay
+                        if (r.width > 200 && r.height > 150) {
+                            // If it contains external links or gambling text, nuke it
+                            var extLinks = child.querySelectorAll('a[href]');
+                            var hasExternal = false;
+                            extLinks.forEach(function(a) {
+                                if (a.hostname !== location.hostname) hasExternal = true;
+                            });
+                            if (hasExternal || hasGamblingText(child)) {
+                                child.style.setProperty('display', 'none', 'important');
+                                child.style.setProperty('pointer-events', 'none', 'important');
+                            }
+                        }
+                    }
+                });
+            });
+        }
+
+        // === RUN EVERYTHING ===
+        function runAll() {
+            nukeGamblingLinks();
+            nukeGamblingText();
+            clickSkipButtons();
+            nukeVideoOverlays();
+        }
+
+        // Run aggressively
+        runAll();
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', runAll);
+        }
+        window.addEventListener('load', function() {
+            runAll();
+            setTimeout(runAll, 300);
+            setTimeout(runAll, 800);
+            setTimeout(runAll, 1500);
+            setTimeout(runAll, 3000);
+            setTimeout(runAll, 5000);
+        });
+
+        // MutationObserver — runs on EVERY DOM change
+        var debounceTimer = null;
+        var obs = new MutationObserver(function() {
+            clearTimeout(debounceTimer);
+            debounceTimer = setTimeout(runAll, 100);
+        });
+        obs.observe(document.documentElement, { childList: true, subtree: true });
+        setTimeout(function() { obs.disconnect(); }, 90000);
+
+        // Periodic skip button check (for countdown timers)
+        var skipInterval = setInterval(function() {
+            clickSkipButtons();
+            nukeVideoOverlays();
+        }, 500);
+        setTimeout(function() { clearInterval(skipInterval); }, 180000);
     })();
     """
     

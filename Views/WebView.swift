@@ -232,17 +232,18 @@ class WebViewStore: ObservableObject {
 
             // Re-inject cosmetic scripts for SPA navigation
             self.webView.evaluateJavaScript("""
-                if (!window.__cyberAdBlockInjected) {
-                    // Script will be re-injected by WKUserScript on next navigation
-                } else {
-                    // Force re-run hiding for SPA pages
+                if (window.__cyberAdBlockInjected) {
                     window.__cyberAdBlockInjected = false;
+                }
+                if (window.__cyberTRv2) {
+                    window.__cyberTRv2 = false;
                 }
             """) { _, _ in }
 
             // Re-run ad blocking scripts on every page finish
             if let engine = self.adBlockEngine, engine.isEnabled {
                 self.webView.evaluateJavaScript(AdBlockEngine.cosmeticFilterScript) { _, _ in }
+                self.webView.evaluateJavaScript(AdBlockEngine.turkishStreamingAdBlockScript) { _, _ in }
             }
             
             self.isNavigatingProgrammatically = false
@@ -316,7 +317,6 @@ class WebViewCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScript
         }
         
         // Layer 2: Block ad domains at the navigation level
-        // This catches requests even if WKContentRuleList failed to compile
         if let engine = store?.adBlockEngine, engine.isEnabled {
             if engine.shouldBlockURL(url) {
                 print("[AdBlock] 🛡️ Blocked: \(url.host ?? url.absoluteString)")
@@ -329,8 +329,36 @@ class WebViewCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScript
             }
         }
         
-        // Handle links that try to open new windows — load in same webview
+        // Block Turkish gambling/betting site redirects
+        if let host = url.host?.lowercased() {
+            let gamblingPatterns = ["bet", "casino", "bahis", "slot", "jackpot", "spin"]
+            if let currentHost = webView.url?.host?.lowercased(),
+               currentHost != host {
+                let isGambling = gamblingPatterns.contains(where: { host.contains($0) })
+                if isGambling {
+                    print("[AdBlock] 🎰 Gambling redirect blocked: \(host)")
+                    DispatchQueue.main.async {
+                        self.store?.adBlockEngine?.handleBlockedAd(count: 1, domain: host)
+                        self.store?.tabManager?.incrementBlockedAds()
+                    }
+                    decisionHandler(.cancel)
+                    return
+                }
+            }
+        }
+        
+        // Handle links that try to open new windows
         if navigationAction.targetFrame == nil {
+            // Block gambling popup targets
+            if let host = url.host?.lowercased() {
+                let gamblingPatterns = ["bet", "casino", "bahis", "slot", "jackpot", "spin", "bonus"]
+                let isGambling = gamblingPatterns.contains(where: { host.contains($0) })
+                if isGambling {
+                    print("[AdBlock] 🎰 Popup to gambling site blocked: \(host)")
+                    decisionHandler(.cancel)
+                    return
+                }
+            }
             webView.load(navigationAction.request)
             decisionHandler(.cancel)
             return
@@ -366,7 +394,16 @@ class WebViewCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScript
     
     // MARK: - WKUIDelegate
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
-        // Load in the same webview instead of opening new window
+        // Block gambling site popups
+        if let url = navigationAction.request.url,
+           let host = url.host?.lowercased() {
+            let gamblingPatterns = ["bet", "casino", "bahis", "slot", "jackpot", "spin", "bonus", "poker"]
+            if gamblingPatterns.contains(where: { host.contains($0) }) {
+                print("[AdBlock] 🎰 Popup blocked: \(host)")
+                return nil
+            }
+        }
+        // Load legitimate links in the same webview
         if let url = navigationAction.request.url {
             webView.load(URLRequest(url: url))
         }
