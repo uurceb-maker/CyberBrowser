@@ -164,22 +164,26 @@ class WebViewStore: ObservableObject {
         }
     }
     
+    @MainActor
     func goBack() {
         if webView.canGoBack {
             webView.goBack()
         }
     }
     
+    @MainActor
     func goForward() {
         if webView.canGoForward {
             webView.goForward()
         }
     }
     
+    @MainActor
     func reload() {
         webView.reload()
     }
     
+    @MainActor
     func stopLoading() {
         webView.stopLoading()
         DispatchQueue.main.async { [weak self] in
@@ -268,6 +272,7 @@ class WebViewStore: ObservableObject {
 }
 
 // MARK: - WebView Coordinator
+@MainActor
 class WebViewCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
     private weak var store: WebViewStore?
     
