@@ -302,23 +302,17 @@ final class AdBlockEngine: ObservableObject, @unchecked Sendable {
             return
         }
 
-        let store = WKContentRuleListStore.default()
-        let group = DispatchGroup()
-        let loadedByIndex = LockedIndexedRuleLists()
-
-        for i in 0..<chunkCount {
-            group.enter()
-            store?.lookupContentRuleList(forIdentifier: "\(easyListIdentifierPrefix)\(i)") { ruleList, _ in
-                if let ruleList = ruleList {
-                    loadedByIndex.set(ruleList, for: i)
-                }
-                group.leave()
-            }
-        }
-
-        group.notify(queue: .main) { [weak self] in
+        Task { @MainActor [weak self] in
             guard let self = self else { return }
-            let ordered = loadedByIndex.orderedValues()
+            let store = WKContentRuleListStore.default()
+            var ordered: [WKContentRuleList] = []
+
+            for i in 0..<chunkCount {
+                if let ruleList = try? await store?.contentRuleList(forIdentifier: "\(self.easyListIdentifierPrefix)\(i)") {
+                    ordered.append(ruleList)
+                }
+            }
+
             guard ordered.count == chunkCount else {
                 UserDefaults.standard.removeObject(forKey: self.easyListChunkCountKey)
                 UserDefaults.standard.removeObject(forKey: self.easyListRuleCountKey)
