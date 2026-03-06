@@ -10,7 +10,7 @@ import Combine
 // Layer 2: decidePolicyFor — catches navigation/iframe requests as fallback
 // Layer 3: JS Cosmetic Filter — hides remaining ad elements visually
 
-class AdBlockEngine: ObservableObject {
+final class AdBlockEngine: ObservableObject, @unchecked Sendable {
     
     // MARK: - Published State
     @Published var isEnabled: Bool {
@@ -106,6 +106,70 @@ class AdBlockEngine: ObservableObject {
     private let easyListChunkCountKey = "easyListChunkCount"
     private var embeddedRuleGroupCount: Int = 0
     private var easyListActiveRuleCount: Int = 0
+
+    private final class LockedRuleListArray {
+        private let lock = NSLock()
+        private var storage: [WKContentRuleList] = []
+
+        func append(_ ruleList: WKContentRuleList) {
+            lock.lock()
+            storage.append(ruleList)
+            lock.unlock()
+        }
+
+        func snapshot() -> [WKContentRuleList] {
+            lock.lock()
+            defer { lock.unlock() }
+            return storage
+        }
+
+        func count() -> Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return storage.count
+        }
+    }
+
+    private final class LockedIndexedRuleLists {
+        private let lock = NSLock()
+        private var storage: [Int: WKContentRuleList] = [:]
+
+        func set(_ ruleList: WKContentRuleList, for index: Int) {
+            lock.lock()
+            storage[index] = ruleList
+            lock.unlock()
+        }
+
+        func orderedValues() -> [WKContentRuleList] {
+            lock.lock()
+            defer { lock.unlock() }
+            return storage.keys.sorted().compactMap { storage[$0] }
+        }
+    }
+
+    private final class VoidCallbackBox: @unchecked Sendable {
+        private let callback: () -> Void
+
+        init(_ callback: @escaping () -> Void) {
+            self.callback = callback
+        }
+
+        func call() {
+            callback()
+        }
+    }
+
+    private final class BoolCallbackBox: @unchecked Sendable {
+        private let callback: (Bool) -> Void
+
+        init(_ callback: @escaping (Bool) -> Void) {
+            self.callback = callback
+        }
+
+        func call(_ value: Bool) {
+            callback(value)
+        }
+    }
     
     // MARK: - init
     init() {
@@ -114,15 +178,16 @@ class AdBlockEngine: ObservableObject {
     
     // MARK: - Compile Rules (Main Entry Point)
     func compileRules(completion: @escaping () -> Void) {
+        let completionBox = VoidCallbackBox(completion)
         guard isEnabled else {
             filterInfo = "Devre dışı"
             compiledRuleLists = []
-            completion()
+            completionBox.call()
             return
         }
         
         guard !isCompiling else {
-            completion()
+            completionBox.call()
             return
         }
         isCompiling = true
@@ -136,15 +201,16 @@ class AdBlockEngine: ObservableObject {
             self.downloadAndCompileEasyList()
             
             // Don't wait for download — return immediately with embedded rules
-            completion()
+            completionBox.call()
         }
     }
     
     // MARK: - Compile Embedded Rules (instant, no download)
     private func compileEmbeddedRules(completion: @escaping () -> Void) {
+        let completionBox = VoidCallbackBox(completion)
         let store = WKContentRuleListStore.default()
         let group = DispatchGroup()
-        var compiled: [WKContentRuleList] = []
+        let compiled = LockedRuleListArray()
         
         // Compile network blocking rules
         group.enter()
@@ -184,14 +250,15 @@ class AdBlockEngine: ObservableObject {
         
         group.notify(queue: .main) { [weak self] in
             guard let self = self else { return }
-            self.compiledRuleLists = compiled
-            self.embeddedRuleGroupCount = compiled.count
+            let compiledLists = compiled.snapshot()
+            self.compiledRuleLists = compiledLists
+            self.embeddedRuleGroupCount = compiled.count()
             self.easyListActiveRuleCount = 0
             self.isCompiling = false
             self.needsRecompile = false
             self.updateFilterInfo()
-            print("[AdBlock] Embedded compilation: \(compiled.count)/3 groups compiled")
-            completion()
+            print("[AdBlock] Embedded compilation: \(compiledLists.count)/3 groups compiled")
+            completionBox.call()
         }
     }
 
@@ -228,24 +295,22 @@ class AdBlockEngine: ObservableObject {
     }
 
     private func loadCompiledEasyListFromStore(completion: @escaping (Bool) -> Void) {
+        let completionBox = BoolCallbackBox(completion)
         let chunkCount = UserDefaults.standard.integer(forKey: easyListChunkCountKey)
         guard chunkCount > 0 else {
-            completion(false)
+            completionBox.call(false)
             return
         }
 
         let store = WKContentRuleListStore.default()
         let group = DispatchGroup()
-        var loadedByIndex: [Int: WKContentRuleList] = [:]
-        let lock = NSLock()
+        let loadedByIndex = LockedIndexedRuleLists()
 
         for i in 0..<chunkCount {
             group.enter()
             store?.lookupContentRuleList(forIdentifier: "\(easyListIdentifierPrefix)\(i)") { ruleList, _ in
                 if let ruleList = ruleList {
-                    lock.lock()
-                    loadedByIndex[i] = ruleList
-                    lock.unlock()
+                    loadedByIndex.set(ruleList, for: i)
                 }
                 group.leave()
             }
@@ -253,11 +318,11 @@ class AdBlockEngine: ObservableObject {
 
         group.notify(queue: .main) { [weak self] in
             guard let self = self else { return }
-            let ordered = loadedByIndex.keys.sorted().compactMap { loadedByIndex[$0] }
+            let ordered = loadedByIndex.orderedValues()
             guard ordered.count == chunkCount else {
                 UserDefaults.standard.removeObject(forKey: self.easyListChunkCountKey)
                 UserDefaults.standard.removeObject(forKey: self.easyListRuleCountKey)
-                completion(false)
+                completionBox.call(false)
                 return
             }
 
@@ -267,16 +332,17 @@ class AdBlockEngine: ObservableObject {
             self.updateFilterInfo()
             print("[AdBlock] Loaded EasyList from compiled cache (\(ordered.count) chunks)")
             NotificationCenter.default.post(name: .adBlockRulesUpdated, object: nil)
-            completion(true)
+            completionBox.call(true)
         }
     }
 
     private func processEasyListRawText(_ rawText: String, completion: ((Bool) -> Void)? = nil) {
+        let completionBox = completion.map(BoolCallbackBox.init)
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
             let trimmed = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else {
-                DispatchQueue.main.async { completion?(false) }
+                completionBox?.call(false)
                 return
             }
 
@@ -286,7 +352,7 @@ class AdBlockEngine: ObservableObject {
                     try? data.write(to: cacheURL)
                 }
                 self.compileDownloadedRules(trimmed) { success in
-                    completion?(success)
+                    completionBox?.call(success)
                 }
                 return
             }
@@ -294,7 +360,7 @@ class AdBlockEngine: ObservableObject {
             let parsedRules = EasyListParser.parse(trimmed, maxRules: self.maxRulesPerChunk)
             guard !parsedRules.isEmpty, let parsedJSON = EasyListParser.toJSON(parsedRules) else {
                 print("[AdBlock] EasyList parse failed or produced no rules")
-                DispatchQueue.main.async { completion?(false) }
+                completionBox?.call(false)
                 return
             }
 
@@ -305,7 +371,7 @@ class AdBlockEngine: ObservableObject {
             }
 
             self.compileDownloadedRules(parsedJSON) { success in
-                completion?(success)
+                completionBox?.call(success)
             }
         }
     }
@@ -359,17 +425,18 @@ class AdBlockEngine: ObservableObject {
 
     // MARK: - Compile Downloaded Rules
     private func compileDownloadedRules(_ jsonString: String, completion: ((Bool) -> Void)? = nil) {
+        let completionBox = completion.map(BoolCallbackBox.init)
         let trimmed = jsonString.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.hasPrefix("[") else {
             print("[AdBlock] Downloaded list is not JSON rule format, skipped")
-            DispatchQueue.main.async { completion?(false) }
+            completionBox?.call(false)
             return
         }
 
         guard let data = jsonString.data(using: .utf8),
               let allRules = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
             print("[AdBlock] Downloaded JSON parse failed")
-            DispatchQueue.main.async { completion?(false) }
+            completionBox?.call(false)
             return
         }
 
@@ -387,7 +454,7 @@ class AdBlockEngine: ObservableObject {
 
         guard !validRules.isEmpty else {
             print("[AdBlock] Downloaded list has no valid rules")
-            DispatchQueue.main.async { completion?(false) }
+            completionBox?.call(false)
             return
         }
 
@@ -398,8 +465,7 @@ class AdBlockEngine: ObservableObject {
 
         let store = WKContentRuleListStore.default()
         let group = DispatchGroup()
-        var downloadedByIndex: [Int: WKContentRuleList] = [:]
-        let lock = NSLock()
+        let downloadedByIndex = LockedIndexedRuleLists()
 
         for (i, chunk) in chunks.enumerated() {
             group.enter()
@@ -411,9 +477,7 @@ class AdBlockEngine: ObservableObject {
 
             store?.compileContentRuleList(forIdentifier: "\(easyListIdentifierPrefix)\(i)", encodedContentRuleList: chunkJSON) { ruleList, error in
                 if let ruleList = ruleList {
-                    lock.lock()
-                    downloadedByIndex[i] = ruleList
-                    lock.unlock()
+                    downloadedByIndex.set(ruleList, for: i)
                     print("[AdBlock] EasyList chunk \(i): \(chunk.count) rules")
                 } else {
                     print("[AdBlock] EasyList chunk \(i) failed: \(error?.localizedDescription ?? "")")
@@ -424,9 +488,9 @@ class AdBlockEngine: ObservableObject {
 
         group.notify(queue: .main) { [weak self] in
             guard let self = self else { return }
-            let downloaded = downloadedByIndex.keys.sorted().compactMap { downloadedByIndex[$0] }
+            let downloaded = downloadedByIndex.orderedValues()
             guard !downloaded.isEmpty else {
-                completion?(false)
+                completionBox?.call(false)
                 return
             }
 
@@ -438,7 +502,7 @@ class AdBlockEngine: ObservableObject {
             print("[AdBlock] EasyList added: \(downloaded.count) chunks")
 
             NotificationCenter.default.post(name: .adBlockRulesUpdated, object: nil)
-            completion?(true)
+            completionBox?.call(true)
         }
     }
     // MARK: - Apply Rules to WKUserContentController
@@ -543,11 +607,9 @@ class AdBlockEngine: ObservableObject {
     
     // MARK: - Handle Blocked Ad
     func handleBlockedAd(count: Int, domain: String) {
-        DispatchQueue.main.async {
-            self.blockedAdsCount += count
-            if !domain.isEmpty {
-                self.lastBlockedDomain = domain
-            }
+        blockedAdsCount += count
+        if !domain.isEmpty {
+            lastBlockedDomain = domain
         }
     }
     

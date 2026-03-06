@@ -133,7 +133,8 @@ struct AddressBar: View {
     private func focusAddressBar() {
         editText = urlString
         isEditing = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 50_000_000)
             isFocused = true
         }
     }

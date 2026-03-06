@@ -85,7 +85,8 @@ struct AdBlockBanner: View {
                 withAnimation(.spring(response: 0.2, dampingFraction: 0.3)) {
                     shieldScale = 1.3
                 }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 200_000_000)
                     withAnimation(.spring(response: 0.3, dampingFraction: 0.5)) {
                         shieldScale = 1.0
                     }
