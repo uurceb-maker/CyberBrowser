@@ -856,9 +856,9 @@ final class AdBlockEngine: ObservableObject, @unchecked Sendable {
     
     static let firstPartyPathRules: String = """
     [
-        {"trigger":{"url-filter":"[\\/\\-_](reklam|sponsor|sponsored|promo|promotion)[\\/\\-_]","resource-type":["image","script","style-sheet","raw","media","svg-document","popup"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"(banner|prebid|vast|preroll|midroll|instream|outstream|doubleclick|pagead|googlesyndication)","resource-type":["image","script","raw","media","popup"]},"action":{"type":"block"}},
-        {"trigger":{"url-filter":"(casino|bahis|bet|bonus)","resource-type":["image","script","raw","media","popup"]},"action":{"type":"block"}}
+        {"trigger":{"url-filter":"[\\/\\-_](reklam|sponsor|sponsored|promo|promotion)[\\/\\-_]","resource-type":["image","script","style-sheet","raw","svg-document","popup"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":"(banner|prebid|vast|preroll|midroll|instream|outstream|doubleclick|pagead|googlesyndication)","resource-type":["image","script","raw","popup"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":"(casino|bahis|bet|bonus)","resource-type":["image","script","raw","popup"]},"action":{"type":"block"}}
     ]
     """
     
@@ -891,7 +891,7 @@ final class AdBlockEngine: ObservableObject, @unchecked Sendable {
         
         const adKeywords = [
             'reklam', 'sponsor', 'sponsored', 'promo',
-            'casino', 'bahis', 'bonus', 'preroll', 'midroll'
+            'casino', 'bahis', 'bonus'
         ];
         
         let totalHidden = 0;
@@ -908,6 +908,7 @@ final class AdBlockEngine: ObservableObject, @unchecked Sendable {
         function hideContainer(el) {
             if (!el) return 0;
             const container = el.closest('section, article, div, aside, li') || el;
+            if (container.querySelector && container.querySelector('video')) return 0;
             const rect = container.getBoundingClientRect ? container.getBoundingClientRect() : null;
             if (!rect || rect.height < 80 || rect.width < 200) return 0;
             if (container && container.style.display !== 'none') {
@@ -922,7 +923,7 @@ final class AdBlockEngine: ObservableObject, @unchecked Sendable {
         
         function hideLikelyAdBlocks() {
             let removed = 0;
-            const candidates = document.querySelectorAll('iframe, img, video, a[href], [id*="reklam"], [class*="reklam"], [id*="sponsor"], [class*="sponsor"]');
+            const candidates = document.querySelectorAll('iframe, img, a[href], [id*="reklam"], [class*="reklam"], [id*="sponsor"], [class*="sponsor"]');
             candidates.forEach(function(el) {
                 const joined = [
                     el.id,
@@ -1323,8 +1324,6 @@ final class AdBlockEngine: ObservableObject, @unchecked Sendable {
             '[class*="reklam"], [id*="reklam"] { display:none!important; height:0!important; }',
             '[class*="adsBox"], [id*="adsBox"] { display:none!important; }',
             '[class*="ad-overlay"], [id*="ad-overlay"] { display:none!important; }',
-            '[class*="preroll"], [id*="preroll"] { display:none!important; }',
-            '[class*="video-ad"], [id*="video-ad"] { display:none!important; }',
             '[class*="adContainer"], [id*="adContainer"] { display:none!important; }',
             '.reklamAlani, #reklamAlani { display:none!important; }',
             '[class*="interstitial"] { display:none!important; }',

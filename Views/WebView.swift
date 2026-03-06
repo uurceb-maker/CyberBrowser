@@ -19,6 +19,7 @@ class WebViewStore: ObservableObject {
     @Published var pageTitle: String = "Yeni Sekme"
     @Published var isSecure: Bool = true
     @Published var currentURLString: String = "https://www.google.com"
+    @Published var isTopBarVisible: Bool = true
     let homeURL = URL(string: "https://www.google.com")!
     
     // The WKWebView instance â€” created once, reused
@@ -37,6 +38,10 @@ class WebViewStore: ObservableObject {
     // Snapshot throttling â€” only take snapshots every 5 seconds max
     private var lastSnapshotTime: TimeInterval = 0
     private let snapshotMinInterval: TimeInterval = 5.0
+    private let topChromeInset: CGFloat = 124
+    private let bottomChromeInset: CGFloat = 112
+    private let chromeScrollThreshold: CGFloat = 14
+    private var lastObservedScrollOffset: CGFloat = 0
     
     init() {
         self.coordinator = WebViewCoordinator(store: self)
@@ -66,6 +71,9 @@ class WebViewStore: ObservableObject {
         config.allowsInlineMediaPlayback = true
         config.mediaTypesRequiringUserActionForPlayback = []
         config.allowsPictureInPictureMediaPlayback = true
+        config.allowsAirPlayForMediaPlayback = true
+        config.defaultWebpagePreferences.preferredContentMode = .mobile
+        config.defaultWebpagePreferences.allowsContentJavaScript = true
         
         // Content controller
         let contentController = WKUserContentController()
@@ -82,9 +90,13 @@ class WebViewStore: ObservableObject {
         wv.navigationDelegate = coordinator
         wv.uiDelegate = coordinator
         wv.allowsBackForwardNavigationGestures = true
+        wv.allowsLinkPreview = false
         wv.isOpaque = false
         wv.backgroundColor = .black
         wv.scrollView.backgroundColor = .black
+        wv.scrollView.delegate = coordinator
+        wv.scrollView.contentInsetAdjustmentBehavior = .never
+        wv.scrollView.keyboardDismissMode = .onDrag
         
         // Use standard Safari iOS user agent â€” NO custom suffix
         // This prevents Google CAPTCHA/verification loops
@@ -94,8 +106,29 @@ class WebViewStore: ObservableObject {
         refresh.addTarget(coordinator, action: #selector(WebViewCoordinator.handlePullToRefresh(_:)), for: .valueChanged)
         wv.scrollView.refreshControl = refresh
         self.refreshControl = refresh
+        applyChromeInsets(to: wv)
         
         return wv
+    }
+
+    private func applyChromeInsets(to webView: WKWebView) {
+        let insets = UIEdgeInsets(top: topChromeInset, left: 0, bottom: bottomChromeInset, right: 0)
+        webView.scrollView.contentInset = insets
+        webView.scrollView.scrollIndicatorInsets = insets
+        webView.scrollView.verticalScrollIndicatorInsets = insets
+    }
+
+    func applyProxyConfiguration(reload: Bool = false) {
+        let config = webView.configuration
+        if let pm = proxyManager, pm.selectedProtocol != .direct {
+            config.websiteDataStore = pm.createProxyDataStore()
+        } else {
+            config.websiteDataStore = .default()
+        }
+        injectScripts()
+        if reload {
+            self.reload()
+        }
     }
     
     // MARK: - Inject Scripts & Rules
@@ -129,18 +162,48 @@ class WebViewStore: ObservableObject {
     }
 
     func reconnectWithProxy() {
-        let config = webView.configuration
-        if let pm = proxyManager, pm.selectedProtocol != .direct {
-            config.websiteDataStore = pm.createProxyDataStore()
-        } else {
-            config.websiteDataStore = .default()
+        applyProxyConfiguration(reload: true)
+    }
+
+    func showTopBar() {
+        guard !isTopBarVisible else { return }
+        withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
+            isTopBarVisible = true
         }
-        injectScripts()
-        reload()
+    }
+
+    func handleScroll(offsetY: CGFloat, isInteracting: Bool) {
+        let revealThreshold = -webView.scrollView.adjustedContentInset.top + 12
+
+        defer {
+            lastObservedScrollOffset = offsetY
+        }
+
+        guard isInteracting else {
+            if offsetY <= revealThreshold {
+                showTopBar()
+            }
+            return
+        }
+
+        if offsetY <= revealThreshold {
+            showTopBar()
+            return
+        }
+
+        let delta = offsetY - lastObservedScrollOffset
+        if delta > chromeScrollThreshold, isTopBarVisible {
+            withAnimation(.spring(response: 0.28, dampingFraction: 0.9)) {
+                isTopBarVisible = false
+            }
+        } else if delta < -chromeScrollThreshold {
+            showTopBar()
+        }
     }
     
     // MARK: - Navigation Actions
     func loadURL(_ url: URL) {
+        showTopBar()
         isNavigatingProgrammatically = true
         currentURLString = url.absoluteString
         webView.load(URLRequest(url: url))
@@ -172,6 +235,7 @@ class WebViewStore: ObservableObject {
     @MainActor
     func goBack() {
         if webView.canGoBack {
+            showTopBar()
             webView.goBack()
         }
     }
@@ -179,12 +243,14 @@ class WebViewStore: ObservableObject {
     @MainActor
     func goForward() {
         if webView.canGoForward {
+            showTopBar()
             webView.goForward()
         }
     }
     
     @MainActor
     func reload() {
+        showTopBar()
         webView.reload()
     }
     
@@ -270,8 +336,11 @@ class WebViewStore: ObservableObject {
 
 // MARK: - WebView Coordinator
 @MainActor
-class WebViewCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
+class WebViewCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler, UIScrollViewDelegate {
     private weak var store: WebViewStore?
+    private let mediaExtensions: Set<String> = [
+        ".m3u8", ".mp4", ".m4v", ".webm", ".mpd", ".ts", ".mov", ".mkv", ".m4a", ".aac", ".mp3"
+    ]
     
     init(store: WebViewStore) {
         self.store = store
@@ -279,6 +348,26 @@ class WebViewCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScript
     
     @objc func handlePullToRefresh(_ sender: UIRefreshControl) {
         store?.reload()
+    }
+
+    func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        store?.handleScroll(
+            offsetY: scrollView.contentOffset.y,
+            isInteracting: scrollView.isTracking || scrollView.isDragging || scrollView.isDecelerating
+        )
+    }
+
+    private func isLikelyMediaRequest(_ url: URL) -> Bool {
+        let absolute = url.absoluteString.lowercased()
+        let path = url.path.lowercased()
+        if mediaExtensions.contains(where: { path.hasSuffix($0) || absolute.contains($0) }) {
+            return true
+        }
+
+        return absolute.contains("mime=video") ||
+            absolute.contains("mime=audio") ||
+            absolute.contains("playlist") ||
+            absolute.contains("manifest")
     }
     
     // MARK: - WKScriptMessageHandler
@@ -301,6 +390,7 @@ class WebViewCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScript
     
     // MARK: - WKNavigationDelegate
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        store?.showTopBar()
         store?.isLoading = true
         store?.updateNavigationState()
     }
@@ -322,6 +412,11 @@ class WebViewCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScript
     // MARK: - Navigation Policy (Layer 2: Domain blocking fallback)
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void) {
         guard let url = navigationAction.request.url else {
+            decisionHandler(.allow)
+            return
+        }
+
+        if isLikelyMediaRequest(url) {
             decisionHandler(.allow)
             return
         }
