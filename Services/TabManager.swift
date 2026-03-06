@@ -1,6 +1,7 @@
 import SwiftUI
 
 // MARK: - Tab Manager Service
+@MainActor
 class TabManager: ObservableObject {
     @Published var tabs: [BrowserTab] = []
     @Published var activeTabIndex: Int = 0

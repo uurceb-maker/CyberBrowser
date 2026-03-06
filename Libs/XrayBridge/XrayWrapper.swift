@@ -2,7 +2,7 @@ import Foundation
 
 /// Swift wrapper around the Xray core bridge.
 /// This is a runtime-safe scaffold until a real xcframework is linked.
-final class XrayWrapper {
+final class XrayWrapper: @unchecked Sendable {
     private var isRunning = false
 
     /// Build an Xray JSON config with local SOCKS inbound and selected outbound.

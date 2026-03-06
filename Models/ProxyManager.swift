@@ -3,6 +3,7 @@ import Foundation
 import Network
 import WebKit
 
+@MainActor
 final class ProxyManager: ObservableObject {
     @Published var isConnected: Bool = false
     @Published var connectionStatus: String = "Baglanti Yok"

@@ -2,7 +2,7 @@ import AVFoundation
 
 // MARK: - Audio Session Manager
 /// Configures AVAudioSession for background audio/video playback
-class AudioSessionManager {
+class AudioSessionManager: @unchecked Sendable {
     static let shared = AudioSessionManager()
     
     private init() {}

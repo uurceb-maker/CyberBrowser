@@ -69,6 +69,7 @@ enum ScriptInjectionTime: String, Codable {
 }
 
 // MARK: - Extension Manager
+@MainActor
 class ExtensionManager: ObservableObject {
     @Published var extensions: [BrowserExtension] = []
     @Published var showExtensionStore: Bool = false
