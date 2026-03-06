@@ -506,7 +506,7 @@ final class AdBlockEngine: ObservableObject, @unchecked Sendable {
         }
     }
     // MARK: - Apply Rules to WKUserContentController
-    func applyRules(to controller: WKUserContentController) {
+    @MainActor func applyRules(to controller: WKUserContentController) {
         // Remove old rules
         controller.removeAllContentRuleLists()
         
