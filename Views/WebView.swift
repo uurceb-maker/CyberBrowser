@@ -49,7 +49,7 @@ class WebViewStore: ObservableObject {
             queue: .main
         ) { [weak self] _ in
             print("[WebView] ğŸ”„ EasyList downloaded â€” re-injecting rules")
-            Task { @MainActor [weak self] in
+            MainActor.assumeIsolated { [weak self] in
                 self?.injectScripts()
             }
         }
@@ -121,7 +121,7 @@ class WebViewStore: ObservableObject {
     // MARK: - Compile Native Rules
     func compileAdBlockRules(completion: @escaping () -> Void) {
         adBlockEngine?.compileRules { [weak self] in
-            Task { @MainActor [weak self] in
+            MainActor.assumeIsolated { [weak self] in
                 self?.injectScripts()
                 completion()
             }

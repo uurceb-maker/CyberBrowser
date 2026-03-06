@@ -49,12 +49,10 @@ struct ProxySettingsView: View {
 
                 Button(proxyManager.isConnected ? "Disconnect" : "Connect") {
                     saveInputs()
-                    Task {
-                        if proxyManager.isConnected {
-                            proxyManager.stopProxy()
-                        } else {
-                            await proxyManager.startProxy()
-                        }
+                    if proxyManager.isConnected {
+                        proxyManager.stopProxy()
+                    } else {
+                        proxyManager.startProxy()
                     }
                 }
             }

@@ -78,7 +78,7 @@ final class ProxyManager: ObservableObject {
     }
 
     // MARK: - Connect / Disconnect
-    func startProxy() async {
+    func startProxy() {
         guard selectedProtocol != .direct else {
             isConnected = false
             connectionStatus = "Dogrudan baglanti"
@@ -124,7 +124,7 @@ final class ProxyManager: ObservableObject {
 
     func handleAppDidBecomeActive() {
         if selectedProtocol != .direct {
-            Task { await startProxy() }
+            startProxy()
         }
     }
 

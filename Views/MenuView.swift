@@ -401,12 +401,10 @@ struct InlineProxyPanel: View {
                 .lineLimit(2)
 
             Button(proxyManager.isConnected ? "Baglantiyi Kes" : "Baglan") {
-                Task {
-                    if proxyManager.isConnected {
-                        proxyManager.stopProxy()
-                    } else {
-                        await proxyManager.startProxy()
-                    }
+                if proxyManager.isConnected {
+                    proxyManager.stopProxy()
+                } else {
+                    proxyManager.startProxy()
                 }
             }
             .font(.system(size: 13, weight: .bold, design: .rounded))

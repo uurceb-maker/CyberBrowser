@@ -35,7 +35,7 @@ struct ServerConfigView: View {
             Section("Eylemler") {
                 Button("Baglantiyi Test Et") {
                     saveToManager()
-                    Task { await proxyManager.startProxy() }
+                    proxyManager.startProxy()
                 }
 
                 Button("Panodan Link Import Et") {

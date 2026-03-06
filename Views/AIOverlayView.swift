@@ -1,6 +1,7 @@
 import SwiftUI
 import WebKit
 
+@MainActor
 struct AIOverlayView: View {
     @ObservedObject var assistant: AIAssistant
     let webView: WKWebView?
@@ -79,11 +80,9 @@ struct AIOverlayView: View {
             return
         }
 
-        Task {
+        Task { @MainActor in
             let result = await assistant.summarizePage(webView: webView)
-            await MainActor.run {
-                assistant.lastResult = result
-            }
+            assistant.lastResult = result
         }
     }
 
@@ -93,12 +92,10 @@ struct AIOverlayView: View {
             return
         }
 
-        Task {
+        Task { @MainActor in
             let selection = await extractSelectionText(from: webView)
             let result = await assistant.translateSelection(selection, to: "en")
-            await MainActor.run {
-                assistant.lastResult = result
-            }
+            assistant.lastResult = result
         }
     }
 
@@ -110,8 +107,4 @@ struct AIOverlayView: View {
             }
         }
     }
-}
-
-#Preview {
-    AIOverlayView(assistant: AIAssistant(), webView: nil)
 }
