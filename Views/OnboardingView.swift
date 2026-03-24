@@ -39,20 +39,7 @@ struct OnboardingView: View {
                     )
                     .tag(2)
 
-                    VStack(spacing: 14) {
-                        onboardingCard(
-                            title: "Yas Dogrulama",
-                            subtitle: "Uygulamayi kullanmak icin en az 17 yasinda olmalisiniz.",
-                            systemImage: "checkmark.seal"
-                        )
-
-                        Toggle("17+ oldugumu onayliyorum", isOn: $isAgeAccepted)
-                            .tint(.cyberYellow)
-                            .font(.system(.body, design: .rounded))
-                            .foregroundColor(.cyberWhite)
-                            .padding(14)
-                            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-                    }
+                    ageGatePage
                     .tag(3)
                 }
                 .tabViewStyle(.page(indexDisplayMode: .always))
@@ -60,9 +47,7 @@ struct OnboardingView: View {
                 HStack(spacing: 12) {
                     if page > 0 {
                         Button("Geri") {
-                            withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
-                                page -= 1
-                            }
+                            moveToPage(max(page - 1, 0))
                         }
                         .buttonStyle(.bordered)
                         .tint(.white.opacity(0.25))
@@ -72,12 +57,9 @@ struct OnboardingView: View {
 
                     Button(page == 3 ? "Basla" : "Ileri") {
                         if page < 3 {
-                            withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
-                                page += 1
-                            }
+                            moveToPage(min(page + 1, 3))
                         } else if isAgeAccepted {
-                            ageGateConfirmed = true
-                            onboardingCompleted = true
+                            completeOnboarding()
                         }
                     }
                     .disabled(page == 3 && !isAgeAccepted)
@@ -89,6 +71,9 @@ struct OnboardingView: View {
                 .padding(.bottom, 20)
             }
             .padding(.top, 20)
+        }
+        .onAppear {
+            isAgeAccepted = ageGateConfirmed
         }
     }
 
@@ -117,6 +102,87 @@ struct OnboardingView: View {
         )
         .padding(.horizontal, 16)
         .padding(.vertical, 14)
+    }
+
+    private var ageGatePage: some View {
+        VStack(spacing: 18) {
+            VStack(spacing: 14) {
+                Image(systemName: "checkmark.seal.fill")
+                    .font(.system(size: 46, weight: .semibold))
+                    .foregroundColor(.cyberYellow)
+
+                Text("Yas Dogrulama")
+                    .font(.system(size: 28, weight: .bold, design: .rounded))
+                    .foregroundColor(.cyberWhite)
+
+                Text("Uygulamayi kullanmak icin en az 17 yasinda oldugunuzu onaylamaniz gerekir.")
+                    .font(.system(size: 15, weight: .medium, design: .rounded))
+                    .foregroundColor(.cyberMuted)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 20)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(26)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    .stroke(Color.cyberYellow.opacity(0.24), lineWidth: 1)
+            )
+
+            Button {
+                withAnimation(.spring(response: 0.28, dampingFraction: 0.84)) {
+                    isAgeAccepted.toggle()
+                }
+            } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: isAgeAccepted ? "checkmark.circle.fill" : "circle")
+                        .font(.system(size: 22, weight: .semibold))
+                        .foregroundColor(isAgeAccepted ? .cyberGreen : .cyberMuted)
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("17+ oldugumu onayliyorum")
+                            .font(.system(size: 16, weight: .semibold, design: .rounded))
+                            .foregroundColor(.cyberWhite)
+
+                        Text("Onay verdikten sonra uygulamaya devam edebilirsiniz.")
+                            .font(.system(size: 12, weight: .medium, design: .rounded))
+                            .foregroundColor(.cyberMuted)
+                    }
+
+                    Spacer()
+                }
+                .padding(16)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .stroke(
+                            isAgeAccepted ? Color.cyberGreen.opacity(0.55) : Color.cyberYellow.opacity(0.2),
+                            lineWidth: 1
+                        )
+                )
+            }
+            .buttonStyle(.plain)
+
+            if !isAgeAccepted {
+                Text("Devam etmek icin once onay kutusunu etkinlestirin.")
+                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                    .foregroundColor(.cyberRed)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+    }
+
+    private func moveToPage(_ newPage: Int) {
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+            page = newPage
+        }
+    }
+
+    private func completeOnboarding() {
+        ageGateConfirmed = true
+        onboardingCompleted = true
     }
 }
 
