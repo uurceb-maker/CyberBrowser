@@ -87,7 +87,18 @@ final class AdBlockEngine: ObservableObject, @unchecked Sendable {
         "/adserver", "/doubleclick", "/googlesyndication", "/pagead",
         "/reklam", "/sponsor", "/promo", "/banner", "/bonus", "/casino", "/bahis", "/bet",
         "/bahis-", "/casino-", "/slot-", "/canli-bahis", "/deneme-bonusu",
-        "/kayip-bonusu", "/hosgeldin-bonusu", "/uye-ol"
+        "/kayip-bonusu", "/hosgeldin-bonusu", "/uye-ol", "/iddaa", "/poker", "/jackpot"
+    ]
+    private let suspiciousGamblingKeywords: Set<String> = [
+        "bet", "casino", "bahis", "slot", "jackpot", "spin", "iddaa", "poker"
+    ]
+    private let suspiciousGamblingTLDs: Set<String> = [
+        "bet", "casino", "slot", "poker"
+    ]
+    private let safeBrowsingHostFragments: Set<String> = [
+        "google", "youtube", "apple", "amazon", "trendyol", "hepsiburada", "n11",
+        "sahibinden", "yemeksepeti", "getir", "migros", "akakce", "hurriyet",
+        "milliyet", "sabah", "sozcu", "ntv", "haberturk", "cnn", "bbc"
     ]
     
     // MARK: - EasyList Download Config
@@ -108,6 +119,10 @@ final class AdBlockEngine: ObservableObject, @unchecked Sendable {
     private let easyListChunkCountKey = "easyListChunkCount"
     private var embeddedRuleGroupCount: Int = 0
     private var easyListActiveRuleCount: Int = 0
+    private static let expandedRequestResourceTypes = [
+        "document", "script", "image", "style-sheet",
+        "raw", "font", "media", "svg-document", "popup"
+    ]
 
     private struct PreparedRuleChunk: Sendable {
         let identifier: String
@@ -180,6 +195,72 @@ final class AdBlockEngine: ObservableObject, @unchecked Sendable {
         compiledRuleLists = embeddedLists + ruleLists
     }
 
+    @MainActor
+    private func notifyEasyListDidUpdate() {
+        NotificationCenter.default.post(name: .easyListDidUpdate, object: nil)
+    }
+
+    private static func mergedResourceTypes(existing: [String]) -> [String] {
+        let merged = Set(existing).union(expandedRequestResourceTypes)
+        return expandedRequestResourceTypes.filter { merged.contains($0) }
+    }
+
+    private static func expandBlockRules(_ rules: [[String: Any]]) -> [[String: Any]] {
+        rules.map { rule in
+            guard
+                let action = rule["action"] as? [String: Any],
+                let actionType = action["type"] as? String,
+                actionType == "block",
+                var trigger = rule["trigger"] as? [String: Any]
+            else {
+                return rule
+            }
+
+            let currentTypes = trigger["resource-type"] as? [String] ?? []
+            trigger["resource-type"] = mergedResourceTypes(existing: currentTypes)
+
+            var updatedRule = rule
+            updatedRule["trigger"] = trigger
+            return updatedRule
+        }
+    }
+
+    private static func normalizedRuleJSON(_ jsonString: String) -> String {
+        guard
+            let data = jsonString.data(using: .utf8),
+            let rules = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]],
+            let normalizedData = try? JSONSerialization.data(withJSONObject: expandBlockRules(rules)),
+            let normalizedJSON = String(data: normalizedData, encoding: .utf8)
+        else {
+            return jsonString
+        }
+
+        return normalizedJSON
+    }
+
+    private func isKnownSafeHost(_ host: String) -> Bool {
+        safeBrowsingHostFragments.contains { host.contains($0) }
+    }
+
+    func isSuspiciousGamblingURL(_ url: URL) -> Bool {
+        guard let host = url.host?.lowercased(), !host.isEmpty else { return false }
+        if isKnownSafeHost(host) {
+            return false
+        }
+
+        if let tld = host.split(separator: ".").last.map(String.init),
+           suspiciousGamblingTLDs.contains(tld) {
+            return true
+        }
+
+        if suspiciousGamblingKeywords.contains(where: { host.contains($0) }) {
+            return true
+        }
+
+        let absolute = url.absoluteString.lowercased()
+        return suspiciousGamblingKeywords.contains(where: { absolute.contains($0) })
+    }
+
     private func writeEasyListCache(_ jsonString: String) {
         guard
             let cacheURL = getCacheFileURL(),
@@ -236,20 +317,24 @@ final class AdBlockEngine: ObservableObject, @unchecked Sendable {
             return
         }
 
-        let embeddedSources: [(identifier: String, rules: String, label: String)] = [
-            ("embedded_network", Self.networkBlockRules, "Network"),
-            ("embedded_css", Self.cssHideRules, "CSS"),
-            ("embedded_first_party", Self.firstPartyPathRules, "First-party")
+        let embeddedSources: [(identifier: String, rules: String, label: String, expandResourceTypes: Bool)] = [
+            ("embedded_network", Self.networkBlockRules, "Network", true),
+            ("embedded_css", Self.cssHideRules, "CSS", false),
+            ("embedded_first_party", Self.firstPartyPathRules, "First-party", true)
         ]
 
         var compiled: [WKContentRuleList] = []
         compiled.reserveCapacity(embeddedSources.count)
 
         for source in embeddedSources {
+            let encodedRules = source.expandResourceTypes
+                ? Self.normalizedRuleJSON(source.rules)
+                : source.rules
+
             let (ruleList, error) = await compileRuleList(
                 in: store,
                 identifier: source.identifier,
-                encodedContentRuleList: source.rules
+                encodedContentRuleList: encodedRules
             )
 
             if let ruleList = ruleList {
@@ -391,7 +476,7 @@ final class AdBlockEngine: ObservableObject, @unchecked Sendable {
         easyListActiveRuleCount = UserDefaults.standard.integer(forKey: easyListRuleCountKey)
         updateFilterInfo()
         print("[AdBlock] Loaded EasyList from compiled cache (\(ordered.count) chunks)")
-        NotificationCenter.default.post(name: .adBlockRulesUpdated, object: nil)
+        notifyEasyListDidUpdate()
         return true
     }
 
@@ -535,9 +620,10 @@ final class AdBlockEngine: ObservableObject, @unchecked Sendable {
             return
         }
 
-        let totalRules = boundedRules.count
+        let normalizedRules = Self.expandBlockRules(boundedRules)
+        let totalRules = normalizedRules.count
         let chunks = stride(from: 0, to: totalRules, by: maxRulesPerChunk).map { start in
-            Array(boundedRules[start..<min(start + maxRulesPerChunk, totalRules)])
+            Array(normalizedRules[start..<min(start + maxRulesPerChunk, totalRules)])
         }
 
         var preparedChunks: [PreparedRuleChunk] = []
@@ -575,7 +661,7 @@ final class AdBlockEngine: ObservableObject, @unchecked Sendable {
     }
 
     @MainActor
-    private func compilePreparedEasyListChunks(_ chunks: [PreparedRuleChunk], totalRules: Int) async -> Bool {
+    private func compilePreparedEasyListChunks(_ chunks: [PreparedRuleChunk], totalRules _: Int) async -> Bool {
         guard let store = contentRuleListStore() else {
             print("[AdBlock] Content rule store unavailable for EasyList")
             UserDefaults.standard.removeObject(forKey: easyListChunkCountKey)
@@ -585,6 +671,8 @@ final class AdBlockEngine: ObservableObject, @unchecked Sendable {
 
         var downloaded: [WKContentRuleList] = []
         downloaded.reserveCapacity(chunks.count)
+        var successfulRuleCount = 0
+        var hadFailures = false
 
         for chunk in chunks {
             let (ruleList, error) = await compileRuleList(
@@ -595,23 +683,34 @@ final class AdBlockEngine: ObservableObject, @unchecked Sendable {
 
             guard let ruleList = ruleList else {
                 print("[AdBlock] EasyList chunk \(chunk.index) failed: \(error?.localizedDescription ?? "unknown")")
-                UserDefaults.standard.removeObject(forKey: easyListChunkCountKey)
-                UserDefaults.standard.removeObject(forKey: easyListRuleCountKey)
-                return false
+                hadFailures = true
+                continue
             }
 
             downloaded.append(ruleList)
+            successfulRuleCount += chunk.ruleCount
             print("[AdBlock] EasyList chunk \(chunk.index): \(chunk.ruleCount) rules")
         }
 
+        guard !downloaded.isEmpty else {
+            UserDefaults.standard.removeObject(forKey: easyListChunkCountKey)
+            UserDefaults.standard.removeObject(forKey: easyListRuleCountKey)
+            return false
+        }
+
         replaceEasyListRuleLists(with: downloaded)
-        easyListActiveRuleCount = totalRules
-        UserDefaults.standard.set(totalRules, forKey: easyListRuleCountKey)
-        UserDefaults.standard.set(chunks.count, forKey: easyListChunkCountKey)
+        easyListActiveRuleCount = successfulRuleCount
+        if hadFailures {
+            UserDefaults.standard.removeObject(forKey: easyListChunkCountKey)
+            UserDefaults.standard.removeObject(forKey: easyListRuleCountKey)
+        } else {
+            UserDefaults.standard.set(successfulRuleCount, forKey: easyListRuleCountKey)
+            UserDefaults.standard.set(chunks.count, forKey: easyListChunkCountKey)
+        }
         updateFilterInfo()
         print("[AdBlock] EasyList added: \(downloaded.count) chunks")
 
-        NotificationCenter.default.post(name: .adBlockRulesUpdated, object: nil)
+        notifyEasyListDidUpdate()
         return true
     }
     // MARK: - Apply Rules to WKUserContentController
@@ -630,7 +729,7 @@ final class AdBlockEngine: ObservableObject, @unchecked Sendable {
         
         // Anti-anti-adblock (runs FIRST at document start to intercept detection)
         let antiDetectScript = WKUserScript(
-            source: Self.antiAdBlockScript,
+            source: Self.antiAdBlockScriptV2,
             injectionTime: .atDocumentStart,
             forMainFrameOnly: false
         )
@@ -659,6 +758,13 @@ final class AdBlockEngine: ObservableObject, @unchecked Sendable {
             forMainFrameOnly: false
         )
         controller.addUserScript(trScript)
+
+        let trCosmeticScript = WKUserScript(
+            source: Self.turkishNewsCosmeticScript,
+            injectionTime: .atDocumentEnd,
+            forMainFrameOnly: false
+        )
+        controller.addUserScript(trCosmeticScript)
         
         // Cookie consent auto-dismiss
         let cookieScript = WKUserScript(
@@ -711,6 +817,11 @@ final class AdBlockEngine: ObservableObject, @unchecked Sendable {
                 return true
             }
         }
+
+        if isSuspiciousGamblingURL(url) {
+            return true
+        }
+
         return false
     }
     
@@ -1205,6 +1316,186 @@ final class AdBlockEngine: ObservableObject, @unchecked Sendable {
         } catch(e) {}
     })();
     """
+
+    static let antiAdBlockScriptV2: String = """
+    (function() {
+        'use strict';
+        if (window.__cyberAntiDetectV2) return;
+
+        try {
+            Object.defineProperty(window, '__cyberAntiDetectV2', {
+                value: true,
+                configurable: false,
+                writable: false
+            });
+        } catch (e) {
+            window.__cyberAntiDetectV2 = true;
+        }
+
+        function defineReadOnly(target, key, value) {
+            try {
+                Object.defineProperty(target, key, {
+                    value: value,
+                    configurable: false,
+                    writable: false,
+                    enumerable: false
+                });
+            } catch (e) {
+                try { target[key] = value; } catch (_) {}
+            }
+        }
+
+        function noop() {}
+
+        var googletagStub = {
+            cmd: {
+                push: function(fn) {
+                    if (typeof fn === 'function') {
+                        try { fn(); } catch (e) {}
+                    }
+                }
+            },
+            pubads: function() {
+                return {
+                    enableSingleRequest: noop,
+                    collapseEmptyDivs: noop,
+                    refresh: noop,
+                    addEventListener: noop,
+                    removeEventListener: noop
+                };
+            },
+            enableServices: noop,
+            display: noop,
+            defineSlot: function() {
+                return {
+                    addService: function() { return this; },
+                    setTargeting: function() { return this; }
+                };
+            }
+        };
+
+        defineReadOnly(window, 'adsbygoogle', {
+            loaded: true,
+            length: 1,
+            push: function() { return 1; }
+        });
+        defineReadOnly(window, 'googletag', googletagStub);
+        defineReadOnly(window, 'canRunAds', true);
+        defineReadOnly(window, '_wq', []);
+        defineReadOnly(window, 'AFRAME_LOADED', true);
+
+        try {
+            Object.defineProperty(navigator, 'webdriver', {
+                get: function() { return false; },
+                configurable: false
+            });
+        } catch (e) {}
+
+        var originalCreateElement = Document.prototype.createElement;
+        Document.prototype.createElement = new Proxy(originalCreateElement, {
+            apply: function(target, thisArg, argArray) {
+                var tag = String((argArray && argArray[0]) || '').toLowerCase();
+                var element = Reflect.apply(target, thisArg, argArray);
+
+                if (tag === 'ins') {
+                    var originalSetAttribute = element.setAttribute;
+                    element.setAttribute = function(name, value) {
+                        if (
+                            String(name).toLowerCase() === 'class' &&
+                            String(value).toLowerCase().indexOf('adsbyg') !== -1
+                        ) {
+                            this.style.setProperty('display', 'none', 'important');
+                            return value;
+                        }
+                        return originalSetAttribute.apply(this, arguments);
+                    };
+
+                    try {
+                        Object.defineProperty(element, 'className', {
+                            get: function() {
+                                return this.getAttribute('class') || '';
+                            },
+                            set: function(value) {
+                                if (String(value).toLowerCase().indexOf('adsbyg') !== -1) {
+                                    this.style.setProperty('display', 'none', 'important');
+                                    return value;
+                                }
+                                originalSetAttribute.call(this, 'class', value);
+                                return value;
+                            },
+                            configurable: true
+                        });
+                    } catch (e) {}
+                }
+
+                return element;
+            }
+        });
+
+        function hideInjectedAdNodes(root) {
+            if (!root || root.nodeType !== 1) return;
+
+            var targets = [];
+            if (
+                root.matches &&
+                root.matches('.ads-container, #ad-wrapper, [data-ad-slot]')
+            ) {
+                targets.push(root);
+            }
+
+            if (root.querySelectorAll) {
+                root.querySelectorAll('.ads-container, #ad-wrapper, [data-ad-slot]').forEach(function(node) {
+                    targets.push(node);
+                });
+            }
+
+            targets.forEach(function(node) {
+                node.style.setProperty('display', 'none', 'important');
+            });
+        }
+
+        hideInjectedAdNodes(document.documentElement);
+
+        var antiDetectObserver = new MutationObserver(function(mutations) {
+            mutations.forEach(function(mutation) {
+                mutation.addedNodes.forEach(function(node) {
+                    hideInjectedAdNodes(node);
+                });
+            });
+        });
+
+        antiDetectObserver.observe(document.documentElement || document, {
+            childList: true,
+            subtree: true
+        });
+
+        try {
+            Object.defineProperty(window, 'blockAdBlock', {
+                get: function() {
+                    return {
+                        onDetected: function() {},
+                        onNotDetected: function(fn) { if (fn) fn(); }
+                    };
+                },
+                set: function() {},
+                configurable: false
+            });
+        } catch (e) {}
+
+        try {
+            Object.defineProperty(window, 'fuckAdBlock', {
+                get: function() {
+                    return {
+                        onDetected: function() {},
+                        onNotDetected: function(fn) { if (fn) fn(); }
+                    };
+                },
+                set: function() {},
+                configurable: false
+            });
+        } catch (e) {}
+    })();
+    """
     
     // MARK: - Fingerprint Protection Script
     static let fingerprintProtectionScript: String = """
@@ -1262,6 +1553,70 @@ final class AdBlockEngine: ObservableObject, @unchecked Sendable {
     })();
     """
 
+    static let turkishNewsCosmeticScript: String = """
+    (function() {
+        'use strict';
+        if (window.__cyberTRCosmetic) return;
+        window.__cyberTRCosmetic = true;
+
+        var selectors = [
+            '.reklam', '.reklam-alani', '.reklam-banner',
+            '.ilan', '.ilan-container', '#ilan',
+            "[class*='reklam']", "[id*='reklam']",
+            "[class*='ilan']", "[id*='ilan']",
+            '.sponsor', '.sponsorlu', "[class*='sponsor']",
+            '.popup-overlay', '.popup-reklam', '#popup',
+            "iframe[src*='doubleclick']", "iframe[src*='googlesyndication']",
+            '.bahis-banner', "[class*='bahis']", "[class*='casino']",
+            "div[style*='z-index: 9999'][style*='position: fixed']"
+        ];
+
+        function hideMatches(root) {
+            if (!root || root.nodeType !== 1) return;
+
+            selectors.forEach(function(selector) {
+                try {
+                    if (root.matches && root.matches(selector)) {
+                        root.style.setProperty('display', 'none', 'important');
+                        root.style.setProperty('height', '0', 'important');
+                        root.style.setProperty('overflow', 'hidden', 'important');
+                    }
+
+                    if (!root.querySelectorAll) return;
+                    root.querySelectorAll(selector).forEach(function(node) {
+                        node.style.setProperty('display', 'none', 'important');
+                        node.style.setProperty('height', '0', 'important');
+                        node.style.setProperty('overflow', 'hidden', 'important');
+                    });
+                } catch (e) {}
+            });
+        }
+
+        var style = document.createElement('style');
+        style.textContent = selectors.join(',\\n') + '{display:none!important;height:0!important;overflow:hidden!important;}';
+        (document.head || document.documentElement).appendChild(style);
+
+        hideMatches(document.documentElement);
+
+        var observer = new MutationObserver(function(mutations) {
+            mutations.forEach(function(mutation) {
+                mutation.addedNodes.forEach(function(node) {
+                    hideMatches(node);
+                });
+            });
+        });
+
+        observer.observe(document.documentElement, {
+            childList: true,
+            subtree: true
+        });
+
+        setTimeout(function() {
+            observer.disconnect();
+        }, 120000);
+    })();
+    """
+
     // MARK: - Turkish Streaming Site Ad Block Script v2
     static let turkishStreamingAdBlockScript: String = """
     (function() {
@@ -1271,7 +1626,7 @@ final class AdBlockEngine: ObservableObject, @unchecked Sendable {
 
         // === BLOCKED DOMAIN PATTERNS (catches image-only banners via link href) ===
         var blockedDomainPatterns = [
-            'bet', 'casino', 'bahis', 'slot', 'jackpot', 'poker',
+            'bet', 'casino', 'bahis', 'slot', 'jackpot', 'poker', 'iddaa',
             'rulet', 'tombala', 'blackjack', 'baccarat'
         ];
         var blockedDomains = [
@@ -1289,6 +1644,8 @@ final class AdBlockEngine: ObservableObject, @unchecked Sendable {
             'deneme bonusu', 'hoşgeldin', 'hosgeldin', 'üye ol',
             'hemen üye', 'bedava bahis', 'canlı bahis', 'canli bahis'
         ];
+
+        blockedTextWords.push('iddaa');
 
         function isGamblingURL(href) {
             if (!href) return false;
@@ -1316,6 +1673,21 @@ final class AdBlockEngine: ObservableObject, @unchecked Sendable {
                 if (text.includes(blockedTextWords[i])) return true;
             }
             return false;
+        }
+
+        function showBlockedToast(message) {
+            try {
+                var oldToast = document.getElementById('__cyberToast');
+                if (oldToast) oldToast.remove();
+                var toast = document.createElement('div');
+                toast.id = '__cyberToast';
+                toast.textContent = message;
+                toast.style.cssText = 'position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:2147483647;background:rgba(0,0,0,0.88);color:#fff;padding:10px 14px;border-radius:999px;font:600 12px -apple-system,BlinkMacSystemFont,sans-serif;';
+                (document.body || document.documentElement).appendChild(toast);
+                setTimeout(function() {
+                    if (toast.parentNode) toast.parentNode.removeChild(toast);
+                }, 1800);
+            } catch (e) {}
         }
 
         // === 1. INJECT CSS — instantly hide known ad patterns ===
@@ -1442,7 +1814,10 @@ final class AdBlockEngine: ObservableObject, @unchecked Sendable {
         // === 6. BLOCK window.open POPUPS ===
         var origOpen = window.open;
         window.open = function(url) {
-            if (url && isGamblingURL(String(url))) return null;
+            if (url && isGamblingURL(String(url))) {
+                showBlockedToast('Bahis popup engellendi');
+                return null;
+            }
             return origOpen.apply(this, arguments);
         };
 
@@ -1596,5 +1971,6 @@ final class AdBlockEngine: ObservableObject, @unchecked Sendable {
 
 // MARK: - Notification
 extension Notification.Name {
+    static let easyListDidUpdate = Notification.Name("easyListDidUpdate")
     static let adBlockRulesUpdated = Notification.Name("adBlockRulesUpdated")
 }

@@ -13,9 +13,12 @@ enum WebNavigationAction {
 // MARK: - WebView Store (Manages WKWebView lifecycle)
 @MainActor
 class WebViewStore: ObservableObject {
+    static let sharedProcessPool = WKProcessPool()
+
     @Published var canGoBack: Bool = false
     @Published var canGoForward: Bool = false
     @Published var isLoading: Bool = false
+    @Published var estimatedProgress: Double = 0
     @Published var pageTitle: String = "Yeni Sekme"
     @Published var isSecure: Bool = true
     @Published var currentURLString: String = "https://www.google.com"
@@ -42,10 +45,14 @@ class WebViewStore: ObservableObject {
     private let bottomChromeInset: CGFloat = 112
     private let chromeScrollThreshold: CGFloat = 14
     private var lastObservedScrollOffset: CGFloat = 0
+    private var pendingScrollRestore: CGPoint?
+    private var cancellables = Set<AnyCancellable>()
     
     init() {
         self.coordinator = WebViewCoordinator(store: self)
         self.webView = createWebView()
+        bindWebViewObservers()
+        observeAdBlockUpdates()
         
         // Listen for background EasyList download completion
         NotificationCenter.default.addObserver(
@@ -66,6 +73,7 @@ class WebViewStore: ObservableObject {
     
     private func createWebView() -> WKWebView {
         let config = WKWebViewConfiguration()
+        config.processPool = Self.sharedProcessPool
         
         // Media playback
         config.allowsInlineMediaPlayback = true
@@ -111,11 +119,80 @@ class WebViewStore: ObservableObject {
         return wv
     }
 
+    private func bindWebViewObservers() {
+        webView.publisher(for: \.url, options: [.initial, .new])
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] url in
+                guard let self, let url else { return }
+                self.currentURLString = url.absoluteString
+                self.isSecure = url.scheme?.lowercased() == "https"
+                self.tabManager?.updateActiveTab(url: url, isSecure: self.isSecure)
+            }
+            .store(in: &cancellables)
+
+        webView.publisher(for: \.canGoBack, options: [.initial, .new])
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] value in
+                self?.canGoBack = value
+            }
+            .store(in: &cancellables)
+
+        webView.publisher(for: \.canGoForward, options: [.initial, .new])
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] value in
+                self?.canGoForward = value
+            }
+            .store(in: &cancellables)
+
+        webView.publisher(for: \.isLoading, options: [.initial, .new])
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] value in
+                guard let self else { return }
+                self.isLoading = value
+                if !value {
+                    self.refreshControl?.endRefreshing()
+                }
+                self.tabManager?.updateActiveTab(isLoading: value)
+            }
+            .store(in: &cancellables)
+
+        webView.publisher(for: \.estimatedProgress, options: [.initial, .new])
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] value in
+                self?.estimatedProgress = value
+            }
+            .store(in: &cancellables)
+
+        webView.publisher(for: \.title, options: [.new])
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] value in
+                guard let self, let value, !value.isEmpty else { return }
+                self.pageTitle = value
+                self.tabManager?.updateActiveTab(title: value)
+            }
+            .store(in: &cancellables)
+    }
+
+    private func observeAdBlockUpdates() {
+        NotificationCenter.default.publisher(for: .easyListDidUpdate)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                guard let self else { return }
+                print("[WebView] EasyList updated - reloading active page")
+                self.applyLatestAdBlockRules(reload: true)
+            }
+            .store(in: &cancellables)
+    }
+
     private func applyChromeInsets(to webView: WKWebView) {
         let insets = UIEdgeInsets(top: topChromeInset, left: 0, bottom: bottomChromeInset, right: 0)
         webView.scrollView.contentInset = insets
         webView.scrollView.scrollIndicatorInsets = insets
         webView.scrollView.verticalScrollIndicatorInsets = insets
+    }
+
+    var currentScrollPosition: CGPoint {
+        webView.scrollView.contentOffset
     }
 
     func applyProxyConfiguration(reload: Bool = false) {
@@ -129,6 +206,12 @@ class WebViewStore: ObservableObject {
         if reload {
             self.reload()
         }
+    }
+
+    func applyLatestAdBlockRules(reload: Bool) {
+        injectScripts()
+        guard reload, webView.url != nil else { return }
+        webView.reload()
     }
     
     // MARK: - Inject Scripts & Rules
@@ -202,9 +285,10 @@ class WebViewStore: ObservableObject {
     }
     
     // MARK: - Navigation Actions
-    func loadURL(_ url: URL) {
+    func loadURL(_ url: URL, restoringScrollPosition: CGPoint? = nil) {
         showTopBar()
         isNavigatingProgrammatically = true
+        pendingScrollRestore = restoringScrollPosition
         currentURLString = url.absoluteString
         webView.load(URLRequest(url: url))
     }
@@ -263,6 +347,43 @@ class WebViewStore: ObservableObject {
     func goHome() {
         loadURL(homeURL)
     }
+
+    func handleCommittedNavigation(url: URL?) {
+        updateNavigationState()
+        guard let url else { return }
+        currentURLString = url.absoluteString
+        isSecure = url.scheme?.lowercased() == "https"
+        tabManager?.updateActiveTab(
+            url: url,
+            isSecure: isSecure,
+            scrollPosition: currentScrollPosition,
+            isLoading: isLoading
+        )
+    }
+
+    func handleWebContentProcessTermination() {
+        let recoveryURL = tabManager?.activeTab.url ?? webView.url ?? homeURL
+        pageTitle = "Yeniden yukleniyor..."
+        currentURLString = recoveryURL.absoluteString
+        isSecure = recoveryURL.scheme?.lowercased() == "https"
+        pendingScrollRestore = tabManager?.activeTab.scrollPosition
+        tabManager?.updateActiveTab(
+            title: pageTitle,
+            url: recoveryURL,
+            isSecure: isSecure,
+            isLoading: true
+        )
+        webView.load(URLRequest(url: recoveryURL))
+    }
+
+    private func restorePendingScrollPositionIfNeeded() {
+        guard let targetOffset = pendingScrollRestore else { return }
+        pendingScrollRestore = nil
+
+        DispatchQueue.main.async { [weak self] in
+            self?.webView.scrollView.setContentOffset(targetOffset, animated: false)
+        }
+    }
     
     // MARK: - State Update (called by coordinator)
     func updateNavigationState() {
@@ -285,9 +406,13 @@ class WebViewStore: ObservableObject {
             tabManager?.updateActiveTab(
                 title: webView.title,
                 url: currentURL,
-                isSecure: currentURL.scheme == "https"
+                isSecure: currentURL.scheme == "https",
+                scrollPosition: currentScrollPosition,
+                isLoading: false
             )
         }
+
+        restorePendingScrollPositionIfNeeded()
 
         // Throttled snapshot - only take one every 5 seconds
         let now = Date().timeIntervalSince1970
@@ -327,6 +452,7 @@ class WebViewStore: ObservableObject {
         // Re-run ad blocking scripts on every page finish
         if let engine = adBlockEngine, engine.isEnabled {
             webView.evaluateJavaScript(AdBlockEngine.cosmeticFilterScript) { _, _ in }
+            webView.evaluateJavaScript(AdBlockEngine.turkishNewsCosmeticScript) { _, _ in }
             webView.evaluateJavaScript(AdBlockEngine.turkishStreamingAdBlockScript) { _, _ in }
         }
 
@@ -394,6 +520,10 @@ class WebViewCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScript
         store?.isLoading = true
         store?.updateNavigationState()
     }
+
+    func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        store?.handleCommittedNavigation(url: webView.url)
+    }
     
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         store?.handlePageFinished()
@@ -407,6 +537,10 @@ class WebViewCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScript
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         store?.isLoading = false
         store?.webView.scrollView.refreshControl?.endRefreshing()
+    }
+
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        store?.handleWebContentProcessTermination()
     }
     
     // MARK: - Navigation Policy (Layer 2: Domain blocking fallback)

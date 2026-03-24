@@ -5,6 +5,7 @@ struct AddressBar: View {
     @Binding var urlString: String
     @Binding var isSecure: Bool
     @Binding var isLoading: Bool
+    @Binding var loadingProgress: Double
     var proxyConnected: Bool = false
     let onCommit: (String) -> Void
 
@@ -15,14 +16,16 @@ struct AddressBar: View {
 
     private var displayText: String {
         if isEditing { return editText }
-        if let url = URL(string: urlString), let host = url.host { return host }
+        if let url = URL(string: urlString), let host = url.host {
+            return host.replacingOccurrences(of: "^www\\.", with: "", options: .regularExpression)
+        }
         return urlString
     }
 
     var body: some View {
         VStack(spacing: 6) {
             HStack(spacing: 10) {
-                Image(systemName: isSecure ? "lock.shield.fill" : "lock.open.fill")
+                Image(systemName: isSecure ? "lock.fill" : "exclamationmark.triangle.fill")
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundColor(isSecure ? .cyberGreen : .cyberRed)
                     .frame(width: 20)
@@ -92,18 +95,9 @@ struct AddressBar: View {
             .animation(.spring(response: 0.3, dampingFraction: 0.85), value: isEditing)
             .overlay(alignment: .bottom) {
                 if isLoading {
-                    Capsule(style: .continuous)
-                        .fill(
-                            LinearGradient(
-                                colors: [
-                                    Color.cyberYellow.opacity(0.3),
-                                    Color.cyberYellow,
-                                    Color.cyberYellow.opacity(0.3)
-                                ],
-                                startPoint: .leading,
-                                endPoint: .trailing
-                            )
-                        )
+                    ProgressView(value: max(loadingProgress, 0.02), total: 1.0)
+                        .progressViewStyle(.linear)
+                        .tint(.cyan)
                         .frame(height: 2)
                         .padding(.horizontal, 24)
                 }

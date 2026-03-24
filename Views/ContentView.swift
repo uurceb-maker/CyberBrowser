@@ -50,6 +50,7 @@ struct ContentView: View {
                         urlString: $displayURL,
                         isSecure: $webViewStore.isSecure,
                         isLoading: $webViewStore.isLoading,
+                        loadingProgress: $webViewStore.estimatedProgress,
                         proxyConnected: proxyManager.isConnected && proxyManager.selectedProtocol != .direct,
                         onCommit: { input in
                             webViewStore.loadURLString(input)
@@ -82,7 +83,9 @@ struct ContentView: View {
                                 tabManager.updateActiveTab(
                                     title: webViewStore.pageTitle,
                                     url: url,
-                                    isSecure: webViewStore.isSecure
+                                    isSecure: webViewStore.isSecure,
+                                    scrollPosition: webViewStore.currentScrollPosition,
+                                    isLoading: webViewStore.isLoading
                                 )
                             }
                             showTabManager = true
@@ -121,9 +124,17 @@ struct ContentView: View {
         .onChange(of: webViewStore.currentURLString) { _, newURL in
             displayURL = newURL
         }
-        .onChange(of: tabManager.activeTabIndex) { _, _ in
+        .onChange(of: tabManager.activeTabIndex) { oldIndex, _ in
+            tabManager.updateTab(
+                at: oldIndex,
+                title: webViewStore.pageTitle,
+                url: webViewStore.webView.url,
+                isSecure: webViewStore.isSecure,
+                scrollPosition: webViewStore.currentScrollPosition,
+                isLoading: webViewStore.isLoading
+            )
             let tab = tabManager.activeTab
-            webViewStore.loadURL(tab.url)
+            webViewStore.loadURL(tab.url, restoringScrollPosition: tab.scrollPosition)
             displayURL = tab.url.absoluteString
         }
         .onChange(of: adBlockEngine.isEnabled) { _, _ in
@@ -145,11 +156,9 @@ struct ContentView: View {
         .fullScreenCover(isPresented: $showTabManager) {
             TabManagerView(
                 onTabSelected: { url in
-                    webViewStore.loadURL(url)
                     displayURL = url.absoluteString
                 },
                 onNewTab: { url in
-                    webViewStore.loadURL(url)
                     displayURL = url.absoluteString
                 }
             )
