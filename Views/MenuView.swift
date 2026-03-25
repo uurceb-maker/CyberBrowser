@@ -2,6 +2,7 @@ import SwiftUI
 import WebKit
 
 // MARK: - Menu View
+@MainActor
 struct MenuView: View {
     enum AITool: String, Identifiable {
         case summary

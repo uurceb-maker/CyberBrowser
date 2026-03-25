@@ -1,5 +1,5 @@
 import SwiftUI
-import WebKit
+@preconcurrency import WebKit
 import Combine
 
 // MARK: - Navigation Action
@@ -681,7 +681,7 @@ final class WebViewCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WK
         return engine.isProtectedVideoURL(url)
     }
 
-    private func blockAndCount(_ url: URL, decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void) {
+    private func blockAndCount(_ url: URL, decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void) {
         store?.adBlockEngine?.handleBlockedAd(count: 1, domain: url.host ?? "")
         store?.tabManager?.incrementBlockedAds()
         decisionHandler(.cancel)
@@ -750,7 +750,7 @@ final class WebViewCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WK
     func webView(
         _ webView: WKWebView,
         decidePolicyFor navigationAction: WKNavigationAction,
-        decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void
+        decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void
     ) {
         guard let url = navigationAction.request.url else {
             decisionHandler(.allow)
@@ -808,7 +808,7 @@ final class WebViewCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WK
     func webView(
         _ webView: WKWebView,
         decidePolicyFor navigationResponse: WKNavigationResponse,
-        decisionHandler: @escaping @MainActor @Sendable (WKNavigationResponsePolicy) -> Void
+        decisionHandler: @escaping @MainActor (WKNavigationResponsePolicy) -> Void
     ) {
         let contentType = navigationResponse.response.mimeType ?? ""
         if contentType.hasPrefix("video/") ||
@@ -875,7 +875,7 @@ final class WebViewCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WK
         _ webView: WKWebView,
         runJavaScriptAlertPanelWithMessage message: String,
         initiatedByFrame frame: WKFrameInfo,
-        completionHandler: @escaping @Sendable () -> Void
+        completionHandler: @escaping @MainActor () -> Void
     ) {
         completionHandler()
     }
@@ -884,7 +884,7 @@ final class WebViewCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WK
         _ webView: WKWebView,
         runJavaScriptConfirmPanelWithMessage message: String,
         initiatedByFrame frame: WKFrameInfo,
-        completionHandler: @escaping @MainActor @Sendable (Bool) -> Void
+        completionHandler: @escaping @MainActor (Bool) -> Void
     ) {
         completionHandler(true)
     }

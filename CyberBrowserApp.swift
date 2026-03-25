@@ -1,6 +1,7 @@
 import SwiftUI
 
 @main
+@MainActor
 struct CyberBrowserApp: App {
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage("onboardingCompleted") private var onboardingCompleted = false

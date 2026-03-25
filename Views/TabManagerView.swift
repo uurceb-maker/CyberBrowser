@@ -1,6 +1,7 @@
 import SwiftUI
 
 // MARK: - Tab Manager View
+@MainActor
 struct TabManagerView: View {
     @EnvironmentObject var tabManager: TabManager
     @Environment(\.dismiss) private var dismiss

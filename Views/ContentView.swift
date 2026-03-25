@@ -1,6 +1,7 @@
 import SwiftUI
 
 // MARK: - Main Content View
+@MainActor
 struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
     @EnvironmentObject var tabManager: TabManager

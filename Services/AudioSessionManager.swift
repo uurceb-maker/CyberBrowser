@@ -1,6 +1,6 @@
-import AVFoundation
-import MediaPlayer
-import WebKit
+@preconcurrency import AVFoundation
+@preconcurrency import MediaPlayer
+@preconcurrency import WebKit
 
 // MARK: - Audio Session Manager
 /// Configures AVAudioSession and media controls for browser playback.
