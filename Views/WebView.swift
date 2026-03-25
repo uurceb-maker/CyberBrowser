@@ -97,9 +97,11 @@ final class WebViewStore: ObservableObject {
 
     func compileAdBlockRules(completion: @escaping () -> Void) {
         adBlockEngine?.compileRules { [weak self] in
-            Task { @MainActor [weak self] in
-                self?.injectScripts()
-                completion()
+            Task { [weak self] in
+                await MainActor.run {
+                    self?.injectScripts()
+                    completion()
+                }
             }
         }
     }
@@ -335,10 +337,12 @@ final class WebViewStore: ObservableObject {
 
     func showTransientMessage(_ message: String) {
         transientMessage = message
-        Task { @MainActor [weak self] in
+        Task { [weak self] in
             try? await Task.sleep(nanoseconds: 4_000_000_000)
-            if self?.transientMessage == message {
-                self?.transientMessage = nil
+            await MainActor.run {
+                if self?.transientMessage == message {
+                    self?.transientMessage = nil
+                }
             }
         }
     }
@@ -558,8 +562,10 @@ final class WebViewStore: ObservableObject {
             let thumbnail = UIGraphicsGetImageFromCurrentImageContext()
             UIGraphicsEndImageContext()
 
-            Task { @MainActor [weak self] in
-                self?.tabManager?.updateActiveTab(snapshot: thumbnail)
+            Task { [weak self] in
+                await MainActor.run {
+                    self?.tabManager?.updateActiveTab(snapshot: thumbnail)
+                }
             }
         }
     }

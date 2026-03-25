@@ -324,11 +324,13 @@ final class AdBlockEngine: ObservableObject, @unchecked Sendable {
         filterInfo = "Kurallar derleniyor..."
         
         // Step 1: Compile embedded rules FIRST (instant, guaranteed)
-        Task { @MainActor [weak self] in
+        Task { [weak self] in
             guard let self = self else { return }
             
             await self.compileEmbeddedRules()
-            self.downloadAndCompileEasyList()
+            await MainActor.run {
+                self.downloadAndCompileEasyList()
+            }
             
             // Don't wait for download — return immediately with embedded rules
             completionBox.call()
@@ -681,14 +683,16 @@ final class AdBlockEngine: ObservableObject, @unchecked Sendable {
             return
         }
 
-        Task { @MainActor [weak self] in
+        Task { [weak self] in
             guard let self = self else {
                 completionBox?.call(false)
                 return
             }
 
             let success = await self.compilePreparedEasyListChunks(preparedChunks, totalRules: totalRules)
-            completionBox?.call(success)
+            await MainActor.run {
+                completionBox?.call(success)
+            }
         }
     }
 

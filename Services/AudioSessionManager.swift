@@ -17,12 +17,6 @@ final class AudioSessionManager: NSObject, ObservableObject {
         observeInterruptions()
     }
 
-    deinit {
-        if let interruptionObserver {
-            NotificationCenter.default.removeObserver(interruptionObserver)
-        }
-    }
-
     func attach(webView: WKWebView?) {
         playbackWebView = webView
         setupRemoteCommandsIfNeeded()
@@ -64,21 +58,23 @@ final class AudioSessionManager: NSObject, ObservableObject {
             object: nil,
             queue: .main
         ) { [weak self] notification in
-            Task { @MainActor [weak self] in
-                guard
-                    let self,
-                    let typeValue = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
-                    let type = AVAudioSession.InterruptionType(rawValue: typeValue)
-                else {
-                    return
-                }
+            Task { [weak self] in
+                await MainActor.run {
+                    guard
+                        let self,
+                        let typeValue = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+                        let type = AVAudioSession.InterruptionType(rawValue: typeValue)
+                    else {
+                        return
+                    }
 
-                switch type {
-                case .ended:
-                    self.configureForBrowserPlayback()
-                    self.resumePlayback()
-                default:
-                    break
+                    switch type {
+                    case .ended:
+                        self.configureForBrowserPlayback()
+                        self.resumePlayback()
+                    default:
+                        break
+                    }
                 }
             }
         }
@@ -90,20 +86,26 @@ final class AudioSessionManager: NSObject, ObservableObject {
 
         let center = MPRemoteCommandCenter.shared()
         center.playCommand.addTarget { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.playMedia()
+            Task { [weak self] in
+                await MainActor.run {
+                    self?.playMedia()
+                }
             }
             return .success
         }
         center.pauseCommand.addTarget { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.pauseMedia()
+            Task { [weak self] in
+                await MainActor.run {
+                    self?.pauseMedia()
+                }
             }
             return .success
         }
         center.togglePlayPauseCommand.addTarget { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.toggleMediaPlayback()
+            Task { [weak self] in
+                await MainActor.run {
+                    self?.toggleMediaPlayback()
+                }
             }
             return .success
         }
