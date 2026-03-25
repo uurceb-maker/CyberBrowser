@@ -12,8 +12,7 @@ struct CyberBrowserApp: App {
     @StateObject private var proxyManager = ProxyManager()
     
     init() {
-        // Configure background audio session
-        AudioSessionManager.shared.configureBackgroundAudio()
+        AudioSessionManager.shared.configureForBrowserPlayback()
         
         // Apply global appearance
         UINavigationBar.appearance().barTintColor = UIColor.black
@@ -42,6 +41,7 @@ struct CyberBrowserApp: App {
             .onChange(of: scenePhase) { _, newPhase in
                 switch newPhase {
                 case .active:
+                    AudioSessionManager.shared.configureForBrowserPlayback()
                     proxyManager.handleAppDidBecomeActive()
                 case .inactive, .background:
                     proxyManager.handleAppWillResignActive()

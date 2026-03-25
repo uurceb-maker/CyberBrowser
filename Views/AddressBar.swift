@@ -6,28 +6,37 @@ struct AddressBar: View {
     @Binding var isSecure: Bool
     @Binding var isLoading: Bool
     @Binding var loadingProgress: Double
+
     var proxyConnected: Bool = false
+    var isPrivateMode: Bool = false
+    var onFocusChange: (Bool) -> Void = { _ in }
     let onCommit: (String) -> Void
 
-    @State private var isEditing: Bool = false
-    @State private var editText: String = ""
+    @State private var isEditing = false
+    @State private var editText = ""
     @FocusState private var isFocused: Bool
     @Namespace private var morphNamespace
 
+    private let privateTint = Color(red: 0.52, green: 0.48, blue: 0.92)
+
     private var displayText: String {
-        if isEditing { return editText }
+        if isEditing {
+            return editText
+        }
+
         if let url = URL(string: urlString), let host = url.host {
             return host.replacingOccurrences(of: "^www\\.", with: "", options: .regularExpression)
         }
+
         return urlString
     }
 
     var body: some View {
         VStack(spacing: 6) {
             HStack(spacing: 10) {
-                Image(systemName: isSecure ? "lock.fill" : "exclamationmark.triangle.fill")
+                Image(systemName: isPrivateMode ? "eyeglasses" : (isSecure ? "lock.fill" : "exclamationmark.triangle.fill"))
                     .font(.system(size: 14, weight: .semibold))
-                    .foregroundColor(isSecure ? .cyberGreen : .cyberRed)
+                    .foregroundColor(isPrivateMode ? privateTint : (isSecure ? .cyberGreen : .cyberRed))
                     .frame(width: 20)
 
                 Group {
@@ -37,8 +46,8 @@ struct AddressBar: View {
                             .font(.system(size: 15, weight: .medium, design: .rounded))
                             .foregroundColor(.cyberWhite)
                             .accentColor(.cyberYellow)
-                            .autocapitalization(.none)
-                            .disableAutocorrection(true)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled(true)
                             .keyboardType(.webSearch)
                             .textContentType(.URL)
                             .focused($isFocused)
@@ -83,21 +92,29 @@ struct AddressBar: View {
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 11)
-            .background(
-                .ultraThinMaterial,
-                in: Capsule(style: .continuous)
-            )
+            .background(.ultraThinMaterial, in: Capsule(style: .continuous))
+            .overlay {
+                if isPrivateMode {
+                    Capsule(style: .continuous)
+                        .fill(privateTint.opacity(0.14))
+                }
+            }
             .matchedGeometryEffect(id: "addressBarMorph", in: morphNamespace)
             .overlay(
                 Capsule(style: .continuous)
-                    .stroke(isFocused ? Color.cyberYellow.opacity(0.7) : Color.white.opacity(0.15), lineWidth: 1)
+                    .stroke(
+                        isFocused
+                            ? (isPrivateMode ? privateTint.opacity(0.8) : Color.cyberYellow.opacity(0.7))
+                            : Color.white.opacity(0.15),
+                        lineWidth: 1
+                    )
             )
             .animation(.spring(response: 0.3, dampingFraction: 0.85), value: isEditing)
             .overlay(alignment: .bottom) {
                 if isLoading {
                     ProgressView(value: max(loadingProgress, 0.02), total: 1.0)
                         .progressViewStyle(.linear)
-                        .tint(.cyan)
+                        .tint(isPrivateMode ? privateTint : .cyan)
                         .frame(height: 2)
                         .padding(.horizontal, 24)
                 }
@@ -110,6 +127,8 @@ struct AddressBar: View {
             if !focused {
                 isEditing = false
             }
+            onFocusChange(focused)
+            NotificationCenter.default.post(name: .addressBarFocusChanged, object: focused)
         }
         .onReceive(NotificationCenter.default.publisher(for: .focusAddressBar)) { _ in
             focusAddressBar()
@@ -136,4 +155,5 @@ struct AddressBar: View {
 
 extension Notification.Name {
     static let focusAddressBar = Notification.Name("focusAddressBar")
+    static let addressBarFocusChanged = Notification.Name("addressBarFocusChanged")
 }

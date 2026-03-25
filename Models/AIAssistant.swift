@@ -29,6 +29,15 @@ final class AIAssistant: ObservableObject {
         return "[\(lang.uppercased())] \(text)"
     }
 
+    func selectedText(from webView: WKWebView) async -> String {
+        let script = "window.getSelection ? window.getSelection().toString() : ''"
+        do {
+            return try await evaluateText(script: script, webView: webView)
+        } catch {
+            return ""
+        }
+    }
+
     private func evaluateText(script: String, webView: WKWebView) async throws -> String {
         try await withCheckedThrowingContinuation { continuation in
             webView.evaluateJavaScript(script) { result, error in

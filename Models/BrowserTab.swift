@@ -1,4 +1,5 @@
 import SwiftUI
+import WebKit
 
 // MARK: - Browser Tab Model
 struct BrowserTab: Identifiable {
@@ -11,7 +12,12 @@ struct BrowserTab: Identifiable {
     var blockedAdsCount: Int
     var scrollPosition: CGPoint
     var isLoading: Bool
-    
+    var isPrivate: Bool
+
+    var websiteDataStore: WKWebsiteDataStore {
+        isPrivate ? .nonPersistent() : .default()
+    }
+
     init(
         id: UUID = UUID(),
         url: URL = URL(string: "https://www.google.com")!,
@@ -21,7 +27,8 @@ struct BrowserTab: Identifiable {
         snapshot: UIImage? = nil,
         blockedAdsCount: Int = 0,
         scrollPosition: CGPoint = .zero,
-        isLoading: Bool = false
+        isLoading: Bool = false,
+        isPrivate: Bool = false
     ) {
         self.id = id
         self.url = url
@@ -32,5 +39,6 @@ struct BrowserTab: Identifiable {
         self.blockedAdsCount = blockedAdsCount
         self.scrollPosition = scrollPosition
         self.isLoading = isLoading
+        self.isPrivate = isPrivate
     }
 }

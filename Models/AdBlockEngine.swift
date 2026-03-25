@@ -121,7 +121,30 @@ final class AdBlockEngine: ObservableObject, @unchecked Sendable {
     private var easyListActiveRuleCount: Int = 0
     private static let expandedRequestResourceTypes = [
         "document", "script", "image", "style-sheet",
-        "raw", "font", "media", "svg-document", "popup"
+        "raw", "font", "svg-document", "popup"
+    ]
+    private static let mediaAdBlockKeywords: Set<String> = [
+        "doubleclick", "googlesyndication", "googleadservices", "pagead", "gampad",
+        "pubads", "imasdk", "vast", "vpaid", "adserver", "preroll", "midroll", "2mdn"
+    ]
+    private static let protectedVideoExtensions: Set<String> = [
+        "m3u8", "ts", "mpd", "mp4", "webm", "m4v", "mov"
+    ]
+    private static let protectedVideoHostFragments: Set<String> = [
+        "googlevideo.com", "youtube.com", "youtu.be", "youtubei.googleapis.com",
+        "vimeo.com", "player.vimeo.com", "blutv.com", "exxen.com",
+        "gain.tv", "mubi.com", "puhutv.com", "tabii.com", "tod.tv"
+    ]
+    private static let directBypassVideoHosts: Set<String> = [
+        "youtube.com", "youtu.be", "vimeo.com", "blutv.com",
+        "exxen.com", "gain.tv", "puhutv.com", "tabii.com", "mubi.com", "tod.tv"
+    ]
+    private static let protectedVideoPathFragments: Set<String> = [
+        "videoplayback", "manifest", "segment", "chunk", "playlist", "stream", "hls", "dash"
+    ]
+    private static let videoAdEndpointFragments: Set<String> = [
+        "imasdk.googleapis.com", "pubads.g.doubleclick.net", "googleads.g.doubleclick.net",
+        "/api/stats/ads", "/pagead/", "/gampad/", "vast", "vpaid", "preroll", "midroll", "ad_break"
     ]
 
     private struct PreparedRuleChunk: Sendable {
@@ -217,7 +240,16 @@ final class AdBlockEngine: ObservableObject, @unchecked Sendable {
             }
 
             let currentTypes = trigger["resource-type"] as? [String] ?? []
-            trigger["resource-type"] = mergedResourceTypes(existing: currentTypes)
+            let filterText = (trigger["url-filter"] as? String ?? "").lowercased()
+            var resourceTypes = mergedResourceTypes(existing: currentTypes)
+
+            if Self.mediaAdBlockKeywords.contains(where: { filterText.contains($0) }) {
+                resourceTypes = resourceTypes + (resourceTypes.contains("media") ? [] : ["media"])
+            }
+
+            trigger["resource-type"] = resourceTypes.filter { type in
+                type != "media" || Self.mediaAdBlockKeywords.contains(where: { filterText.contains($0) })
+            }
 
             var updatedRule = rule
             updatedRule["trigger"] = trigger
@@ -745,7 +777,7 @@ final class AdBlockEngine: ObservableObject, @unchecked Sendable {
         
         // Layer 3: JS Cosmetic Filter (runs in ALL frames)
         let cosmeticScript = WKUserScript(
-            source: Self.cosmeticFilterScript,
+            source: Self.optimizedCosmeticFilterScript,
             injectionTime: .atDocumentEnd,
             forMainFrameOnly: false
         )
@@ -774,13 +806,26 @@ final class AdBlockEngine: ObservableObject, @unchecked Sendable {
         )
         controller.addUserScript(cookieScript)
         
-        // YouTube ad skip (main frame only)
-        let ytScript = WKUserScript(
-            source: Self.youtubeAdSkipScript,
+        let genericVideoScript = WKUserScript(
+            source: Self.genericVideoAdAutomationScript,
             injectionTime: .atDocumentEnd,
-            forMainFrameOnly: true
+            forMainFrameOnly: false
+        )
+        controller.addUserScript(genericVideoScript)
+
+        let ytScript = WKUserScript(
+            source: Self.youtubeAdSkipScriptV3,
+            injectionTime: .atDocumentEnd,
+            forMainFrameOnly: false
         )
         controller.addUserScript(ytScript)
+
+        let ytStyleScript = WKUserScript(
+            source: Self.youtubeAdStyleScript,
+            injectionTime: .atDocumentEnd,
+            forMainFrameOnly: false
+        )
+        controller.addUserScript(ytStyleScript)
     }
     
     // MARK: - Layer 2: URL Blocking (decidePolicyFor fallback)
@@ -823,6 +868,63 @@ final class AdBlockEngine: ObservableObject, @unchecked Sendable {
         }
 
         return false
+    }
+
+    func shouldBypassBlocking(for url: URL) -> Bool {
+        guard let host = url.host?.lowercased() else { return false }
+        return Self.directBypassVideoHosts.contains(where: { host.contains($0) })
+    }
+
+    func isProtectedVideoURL(_ url: URL) -> Bool {
+        let absolute = url.absoluteString.lowercased()
+        let host = url.host?.lowercased() ?? ""
+        let path = url.path.lowercased()
+        let pathExtension = url.pathExtension.lowercased()
+
+        if Self.protectedVideoExtensions.contains(pathExtension) {
+            return true
+        }
+
+        if absolute.contains("/videoplayback") {
+            return true
+        }
+
+        if Self.protectedVideoHostFragments.contains(where: { host.contains($0) }) {
+            return !isVideoAdEndpoint(url)
+        }
+
+        let isGenericVideoHost = host.hasPrefix("cdn.") || host.hasPrefix("video.") || host.hasPrefix("stream.")
+        if isGenericVideoHost && Self.protectedVideoPathFragments.contains(where: { absolute.contains($0) || path.contains($0) }) {
+            return true
+        }
+
+        return false
+    }
+
+    func isVideoAdEndpoint(_ url: URL) -> Bool {
+        let absolute = url.absoluteString.lowercased()
+        return Self.videoAdEndpointFragments.contains(where: { absolute.contains($0) })
+    }
+
+    func shouldBlockURL(_ url: URL, mainDocumentURL: URL?) -> Bool {
+        guard isEnabled else { return false }
+
+        if isVideoAdEndpoint(url) {
+            return true
+        }
+
+        if isProtectedVideoURL(url) || shouldBypassBlocking(for: url) {
+            return false
+        }
+
+        if let mainHost = mainDocumentURL?.host?.lowercased(),
+           Self.protectedVideoHostFragments.contains(where: { mainHost.contains($0) }),
+           let host = url.host?.lowercased(),
+           host == mainHost || host.hasSuffix(".\(mainHost)") {
+            return false
+        }
+
+        return shouldBlockURL(url)
     }
     
     // MARK: - Handle Blocked Ad
@@ -922,6 +1024,10 @@ final class AdBlockEngine: ObservableObject, @unchecked Sendable {
         {"trigger":{"url-filter":"/ad_iframe","resource-type":["script","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
         {"trigger":{"url-filter":"/adfetch","resource-type":["script","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
         {"trigger":{"url-filter":"/adhandler","resource-type":["script","raw"],"load-type":["third-party"]},"action":{"type":"block"}},
+        {"trigger":{"url-filter":"^https?://.*\\.(m3u8|ts|mpd|mp4|webm)(\\?.*)?$"},"action":{"type":"ignore-previous-rules"}},
+        {"trigger":{"url-filter":"^https?://([^.]+\\.)?(cdn|video|stream)[^/]*?/.*(manifest|segment|chunk|playlist|videoplayback).*"},"action":{"type":"ignore-previous-rules"}},
+        {"trigger":{"url-filter":"^https?://.*"},"if-domain":["*blutv.com","*exxen.com","*gain.tv","*mubi.com","*puhutv.com","*tabii.com","*tod.tv"],"action":{"type":"ignore-previous-rules"}},
+        {"trigger":{"url-filter":"^https?://.*youtube\\.com/videoplayback.*"},"action":{"type":"ignore-previous-rules"}},
         {"trigger":{"url-filter":".*\\.googlesyndication\\.com","if-domain":["*youtube.com","*youtu.be"]},"action":{"type":"ignore-previous-rules"}},
         {"trigger":{"url-filter":".*\\.doubleclick\\.net","if-domain":["*youtube.com","*youtu.be"]},"action":{"type":"ignore-previous-rules"}}
     ]
@@ -1241,6 +1347,339 @@ final class AdBlockEngine: ObservableObject, @unchecked Sendable {
             mainCheck();
             setTimeout(observePlayer, 2000);
         }
+    })();
+    """
+
+    static let optimizedCosmeticFilterScript: String = """
+    (function() {
+        'use strict';
+        if (window.__cyberAdBlockInjectedV2) return;
+        window.__cyberAdBlockInjectedV2 = true;
+
+        var selectors = [
+            '.adsbygoogle', 'ins.adsbygoogle', '[id^="google_ads"]', '[id^="div-gpt-ad"]',
+            '[class*="ad-container"]', '[class*="ad-wrapper"]', '[class*="ad-banner"]',
+            '[class*="adunit"]', '[class*="ad-slot"]', '[class*="ad_unit"]',
+            '[class*="sponsored"]', '[class*="ad-placement"]', '[id*="taboola"]',
+            '[class*="taboola"]', '[id*="outbrain"]', '[class*="outbrain"]',
+            '.trc_related_container', '#taboola-below-article', '.ad-overlay',
+            '#ad-overlay', '[class*="interstitial"]', '[id*="ad-popup"]',
+            '[class*="ad-popup"]', '[id*="reklam"]', '[class*="reklam"]',
+            '[id*="sponsor"]', '[class*="sponsor"]'
+        ];
+        var playerSelectors = [
+            'video', 'audio', '[class*="player"]', '[id*="player"]',
+            '[class*="video-js"]', '[class*="videojs"]', '[class*="jwplayer"]',
+            '[id*="jwplayer"]', '[class*="bitmovin"]', '[class*="plyr"]',
+            '[class*="vjs-"]', '.html5-video-container', '#movie_player', '.ytd-player'
+        ];
+        var adKeywords = ['reklam', 'ilan', 'sponsor', 'sponsored', 'promo', 'casino', 'bahis', 'bonus'];
+        var pendingNodes = new Set();
+        var rafId = null;
+
+        function hasKeyword(text) {
+            if (!text) return false;
+            var lower = String(text).toLowerCase();
+            for (var i = 0; i < adKeywords.length; i++) {
+                if (lower.indexOf(adKeywords[i]) !== -1) return true;
+            }
+            return false;
+        }
+
+        function isProtected(node) {
+            if (!node || node.nodeType !== 1) return true;
+            try {
+                if (node.matches(playerSelectors.join(','))) return true;
+            } catch (e) {}
+            if (node.tagName === 'VIDEO' || node.tagName === 'AUDIO') return true;
+            if (node.querySelector && node.querySelector('video, audio')) return true;
+            if (node.closest && node.closest('[class*="player"], [id*="player"], [class*="video-js"], [class*="jwplayer"], [class*="bitmovin"], [class*="plyr"], #movie_player, .ytd-player')) {
+                return true;
+            }
+            try {
+                var computed = window.getComputedStyle(node);
+                var zIndex = parseInt(computed.zIndex || '0', 10);
+                if (zIndex > 1000 && node.querySelector && node.querySelector('video, audio')) {
+                    return true;
+                }
+            } catch (e) {}
+            return false;
+        }
+
+        function notify(count) {
+            if (!count) return;
+            try {
+                window.webkit.messageHandlers.adBlocked.postMessage({ count: count, url: location.hostname });
+            } catch (e) {}
+        }
+
+        function hardHide(target) {
+            if (!target || isProtected(target)) return 0;
+            target.style.setProperty('display', 'none', 'important');
+            target.style.setProperty('height', '0', 'important');
+            target.style.setProperty('overflow', 'hidden', 'important');
+            return 1;
+        }
+
+        function softHide(target) {
+            if (!target || isProtected(target) || target.__cyberSoftHiddenV2) return 0;
+            target.__cyberSoftHiddenV2 = true;
+            target.style.setProperty('visibility', 'hidden', 'important');
+            target.style.setProperty('pointer-events', 'none', 'important');
+            setTimeout(function() {
+                if (isProtected(target)) return;
+                hardHide(target);
+            }, 200);
+            return 1;
+        }
+
+        function cleanNode(node) {
+            if (!node || node.nodeType !== 1 || isProtected(node)) return 0;
+            var className = typeof node.className === 'string' ? node.className : '';
+            var id = node.id || '';
+            var fastPath = (className + ' ' + id + ' ' + (node.textContent || '')).toLowerCase();
+            var suspicious = hasKeyword(fastPath);
+            if (!suspicious && node.matches) {
+                suspicious = node.matches('[data-ad],[data-ad-slot],[class*="ads-"],[class*="taboola"],[class*="outbrain"]');
+            }
+            if (!suspicious) return 0;
+            return softHide(node.closest('section, article, div, aside, li, figure') || node);
+        }
+
+        function scanSelectors(root) {
+            var count = 0;
+            var scope = root && root.querySelectorAll ? root : document;
+            try {
+                scope.querySelectorAll(selectors.join(',')).forEach(function(node) {
+                    if (!isProtected(node)) {
+                        count += softHide(node.closest('section, article, div, aside, li, figure') || node);
+                    }
+                });
+            } catch (e) {}
+            notify(count);
+        }
+
+        function flushPendingNodes() {
+            var count = 0;
+            pendingNodes.forEach(function(node) {
+                count += cleanNode(node);
+            });
+            pendingNodes.clear();
+            rafId = null;
+            notify(count);
+        }
+
+        function scheduleFlush() {
+            if (rafId) return;
+            rafId = requestAnimationFrame(flushPendingNodes);
+        }
+
+        scanSelectors(document);
+
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', function() {
+                scanSelectors(document);
+            }, { once: true });
+        }
+
+        window.addEventListener('load', function() {
+            scanSelectors(document);
+            setTimeout(function() { scanSelectors(document); }, 500);
+            setTimeout(function() { scanSelectors(document); }, 1800);
+        }, { once: true });
+
+        var observer = new MutationObserver(function(mutations) {
+            mutations.forEach(function(mutation) {
+                mutation.addedNodes.forEach(function(node) {
+                    if (node && node.nodeType === 1) {
+                        pendingNodes.add(node);
+                    }
+                });
+            });
+            scheduleFlush();
+        });
+        observer.observe(document.body || document.documentElement, { childList: true });
+        setTimeout(function() { observer.disconnect(); }, 60000);
+
+        var deepScan = setInterval(function() {
+            scanSelectors(document);
+        }, 2500);
+        setTimeout(function() { clearInterval(deepScan); }, 60000);
+    })();
+    """
+
+    static let genericVideoAdAutomationScript: String = """
+    (function() {
+        'use strict';
+        if (window.__cyberGenericVideoAdAutomation) return;
+        window.__cyberGenericVideoAdAutomation = true;
+
+        var skipSelectors = [
+            '.ytp-ad-skip-button', '.ytp-skip-ad-button', '[class*="skip-button"]',
+            '[class*="skip"][class*="ad"]', '[id*="skip"][id*="ad"]',
+            '[class*="Skip"][class*="Ad"]', 'button[class*="reklam"]',
+            '.skip-ad', '#skip-ad', '.reklamAtla', '.reklam-atla'
+        ];
+        var overlaySelectors = [
+            '.ytp-ad-overlay-container', '.ytp-ad-text-overlay',
+            '[class*="ad-overlay"]', '[class*="reklam-overlay"]',
+            '.preroll-container', '.video-ads', '#player-ads'
+        ];
+
+        function clickVisibleSkipButtons() {
+            skipSelectors.forEach(function(selector) {
+                document.querySelectorAll(selector).forEach(function(button) {
+                    if (button && button.offsetParent !== null) {
+                        try { button.click(); } catch (e) {}
+                    }
+                });
+            });
+        }
+
+        function removeOverlays() {
+            overlaySelectors.forEach(function(selector) {
+                document.querySelectorAll(selector).forEach(function(node) {
+                    try { node.remove(); } catch (e) {
+                        node.style.setProperty('display', 'none', 'important');
+                    }
+                });
+            });
+        }
+
+        function accelerateAdVideo() {
+            var video = document.querySelector('video');
+            if (!video) return;
+            var adBadge = document.querySelector('.ytp-ad-badge, .ytp-ad-text, [class*="preroll"], [class*="midroll"], [class*="ad-badge"]');
+            if (!adBadge) return;
+
+            if (Number.isFinite(video.duration) && video.duration > 1) {
+                try { video.currentTime = Math.max(video.duration - 0.1, 0); } catch (e) {
+                    video.playbackRate = 16;
+                }
+            } else {
+                video.playbackRate = 16;
+            }
+        }
+
+        function run() {
+            clickVisibleSkipButtons();
+            removeOverlays();
+            accelerateAdVideo();
+        }
+
+        run();
+        var interval = setInterval(run, 500);
+        setTimeout(function() { clearInterval(interval); }, 180000);
+    })();
+    """
+
+    static let youtubeAdSkipScriptV3: String = """
+    (function() {
+        'use strict';
+        if (!location.hostname.includes('youtube.com')) return;
+        if (window.__cyberYTv5) return;
+        window.__cyberYTv5 = true;
+
+        function clickSkipButton() {
+            var skipBtn = document.querySelector(
+                '.ytp-ad-skip-button, .ytp-skip-ad-button, .ytp-ad-skip-button-modern, ' +
+                'button.ytp-ad-skip-button-modern, .ytp-ad-skip-button-slot, ' +
+                '.videoAdUiSkipButton, .ytp-ad-skip-button-container button, [class*="skip-button"]'
+            );
+            if (skipBtn) {
+                try { skipBtn.click(); } catch (e) {}
+                return true;
+            }
+            return false;
+        }
+
+        function removeOverlays() {
+            [
+                '.ytp-ad-overlay-container', '.ytp-ad-text-overlay', '.ytp-ad-image-overlay',
+                '.ytp-ad-player-overlay-flyout-cta', '.ytp-ad-action-interstitial',
+                'ytd-promoted-sparkles-web-renderer', 'ytd-ad-slot-renderer',
+                'ytd-in-feed-ad-layout-renderer', '.ytd-banner-promo-renderer',
+                '.ytd-statement-banner-renderer', '#masthead-ad', '#player-ads'
+            ].forEach(function(selector) {
+                document.querySelectorAll(selector).forEach(function(node) {
+                    node.style.setProperty('display', 'none', 'important');
+                });
+            });
+        }
+
+        function handleAdState() {
+            var player = document.querySelector('.html5-video-player');
+            var video = document.querySelector('video');
+            var adBadge = document.querySelector('.ytp-ad-badge, .ytp-ad-text');
+            var adShowing = !!(player && player.classList.contains('ad-showing')) || !!adBadge;
+
+            removeOverlays();
+            clickSkipButton();
+
+            if (!video) return;
+
+            if (adShowing) {
+                video.__cyberAdMuted = true;
+                video.muted = true;
+                if (Number.isFinite(video.duration) && video.duration > 1) {
+                    try { video.currentTime = Math.max(video.duration - 0.1, 0); } catch (e) {
+                        video.playbackRate = 16;
+                    }
+                } else {
+                    video.playbackRate = 16;
+                }
+                return;
+            }
+
+            if (video.playbackRate > 1) {
+                video.playbackRate = 1;
+            }
+            if (video.__cyberAdMuted) {
+                video.muted = false;
+                video.__cyberAdMuted = false;
+            }
+        }
+
+        function observePlayer() {
+            var player = document.querySelector('.html5-video-player');
+            if (!player) return;
+            var observer = new MutationObserver(function() {
+                handleAdState();
+            });
+            observer.observe(player, { attributes: true, attributeFilter: ['class'] });
+            setTimeout(function() { observer.disconnect(); }, 300000);
+        }
+
+        handleAdState();
+        observePlayer();
+
+        var mainInterval = setInterval(handleAdState, 300);
+        setTimeout(function() { clearInterval(mainInterval); }, 300000);
+    })();
+    """
+
+    static let youtubeAdStyleScript: String = """
+    (function() {
+        if (window.__cyberYTStyleInjected) return;
+        window.__cyberYTStyleInjected = true;
+
+        var style = document.createElement('style');
+        style.textContent = `
+        .ytp-ad-module,
+        .ytp-ad-overlay-container,
+        .ytp-ad-progress,
+        .ytp-ad-progress-list,
+        #masthead-ad,
+        .ytd-banner-promo-renderer,
+        .ytd-statement-banner-renderer,
+        ytd-ad-slot-renderer,
+        ytd-in-feed-ad-layout-renderer,
+        ytd-promoted-sparkles-web-renderer,
+        #player-ads,
+        #panels ytd-engagement-panel-section-list-renderer[target-id="engagement-panel-ads"] {
+            display: none !important;
+        }`;
+        (document.head || document.documentElement).appendChild(style);
     })();
     """
     
