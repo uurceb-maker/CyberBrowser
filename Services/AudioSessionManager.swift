@@ -58,24 +58,20 @@ final class AudioSessionManager: NSObject, ObservableObject {
             object: nil,
             queue: .main
         ) { [weak self] notification in
-            Task { [weak self] in
-                await MainActor.run {
-                    guard
-                        let self,
-                        let typeValue = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
-                        let type = AVAudioSession.InterruptionType(rawValue: typeValue)
-                    else {
-                        return
-                    }
+            guard
+                let self,
+                let typeValue = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+                let type = AVAudioSession.InterruptionType(rawValue: typeValue)
+            else {
+                return
+            }
 
-                    switch type {
-                    case .ended:
-                        self.configureForBrowserPlayback()
-                        self.resumePlayback()
-                    default:
-                        break
-                    }
-                }
+            switch type {
+            case .ended:
+                self.configureForBrowserPlayback()
+                self.resumePlayback()
+            default:
+                break
             }
         }
     }
